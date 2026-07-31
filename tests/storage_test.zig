@@ -1,9 +1,10 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const testing = std.testing;
 const storage = @import("storage");
 
 fn ensureDir(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |e| switch (e) {
+    std.Io.Dir.createDirAbsolute(app_io.get(), path, .default_dir) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         else => return e,
     };
@@ -12,7 +13,7 @@ fn ensureDir(path: []const u8) !void {
 /// Format the current UTC timestamp the same way storage.newCapturePath does,
 /// so collision tests can pre-create the file that "now" would produce.
 fn currentStamp(allocator: std.mem.Allocator) ![]u8 {
-    const ts = std.time.timestamp();
+    const ts = std.Io.Clock.real.now(app_io.get()).toSeconds();
     const epoch_sec = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
     const year_day = epoch_sec.getEpochDay().calculateYearDay();
     const month_day = year_day.calculateMonthDay();
@@ -31,7 +32,7 @@ test "captureDir defaults to HOME/screenshots" {
     // Isolate from the real HOME by setting a temp root.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const root = try tmp.dir.realPathFileAlloc(app_io.get(), ".", testing.allocator);
     defer testing.allocator.free(root);
     // captureDir reads getenv("HOME"); we can't override env portably here,
     // so only assert the override path is used as-is (no ZigIt suffix).
@@ -41,13 +42,13 @@ test "captureDir defaults to HOME/screenshots" {
     defer testing.allocator.free(dir);
     try testing.expectEqualStrings(custom, dir);
     // Directory was created.
-    var d = try std.fs.openDirAbsolute(dir, .{});
-    d.close();
+    var d = try std.Io.Dir.openDirAbsolute(app_io.get(), dir, .{});
+    d.close(app_io.get());
 }
 
 test "expandHome expands tilde slash" {
     // Only meaningful when HOME is set (always true in the test harness).
-    const home = std.posix.getenv("HOME") orelse return error.SkipZigTest;
+    const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.SkipZigTest;
     const expanded = try storage.expandHome(testing.allocator, "~/foo/bar");
     defer testing.allocator.free(expanded);
     const expected = try std.fs.path.join(testing.allocator, &.{ home, "foo/bar" });
@@ -58,7 +59,7 @@ test "expandHome expands tilde slash" {
 test "newCapturePath returns timestamped png inside dir" {
     const tmp = "/tmp/zigit-test-captures";
     try ensureDir(tmp);
-    defer std.fs.deleteDirAbsolute(tmp) catch {};
+    defer std.Io.Dir.deleteDirAbsolute(app_io.get(), tmp) catch {};
 
     const p = try storage.newCapturePath(testing.allocator, tmp);
     defer testing.allocator.free(p);
@@ -69,14 +70,14 @@ test "newCapturePath returns timestamped png inside dir" {
 test "newCapturePath appends _N on collision" {
     const tmp = "/tmp/zigit-test-captures-2";
     try ensureDir(tmp);
-    defer std.fs.deleteTreeAbsolute(tmp) catch {};
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), tmp) catch {};
 
     const stamp = try currentStamp(testing.allocator);
     defer testing.allocator.free(stamp);
     const occupied = try std.fmt.allocPrint(testing.allocator, "{s}/{s}.png", .{ tmp, stamp });
     defer testing.allocator.free(occupied);
-    const f1 = try std.fs.createFileAbsolute(occupied, .{});
-    f1.close();
+    const f1 = try std.Io.Dir.createFileAbsolute(app_io.get(), occupied, .{});
+    f1.close(app_io.get());
 
     const p = try storage.newCapturePath(testing.allocator, tmp);
     defer testing.allocator.free(p);

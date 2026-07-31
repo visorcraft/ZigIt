@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const testing = std.testing;
 const cfg = @import("config");
 
@@ -23,7 +24,7 @@ test "load returns defaults when config file missing" {
 test "load parses full schema" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(.{
+    try tmp.dir.writeFile(app_io.get(), .{
         .sub_path = "config.toml",
         .data =
         \\hotkey = "Super+Shift+S"
@@ -35,7 +36,7 @@ test "load parses full schema" {
         \\
         ,
     });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "config.toml");
+    const path = try tmp.dir.realPathFileAlloc(app_io.get(), "config.toml", testing.allocator);
     defer testing.allocator.free(path);
 
     const c = try cfg.Config.load(testing.allocator, path);
@@ -54,7 +55,7 @@ test "save round-trips preferences" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // Real absolute path under the tmp dir.
-    const dir_path = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    const dir_path = try tmp.dir.realPathFileAlloc(app_io.get(), ".", testing.allocator);
     defer testing.allocator.free(dir_path);
     const path = try std.fs.path.join(testing.allocator, &.{ dir_path, "zigit", "config.toml" });
     defer testing.allocator.free(path);

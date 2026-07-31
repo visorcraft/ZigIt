@@ -1,17 +1,26 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const ui = @import("ui");
 const overlay = @import("overlay");
 const setup = @import("setup");
 const editor_window = @import("editor_window");
 
-pub const version = "0.1.0";
+pub const version = "0.1.1";
 
-pub fn main() !void {
-    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+pub fn main(init: std.process.Init) !void {
+    app_io.set(init.io);
+    const allocator = init.gpa;
+
+    var args_list: std.array_list.Managed([]const u8) = .init(allocator);
+    defer args_list.deinit();
+    var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer arg_it.deinit();
+    while (arg_it.next()) |a| {
+        try args_list.append(try allocator.dupe(u8, a));
+    }
+    defer for (args_list.items) |a| allocator.free(a);
+    const args = args_list.items;
+
     if (args.len == 2 and std.mem.eql(u8, args[1], "--version")) {
         std.debug.print("ZigIt {s}\n", .{version});
         return;

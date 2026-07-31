@@ -1,7 +1,9 @@
 .{
-    .name = "zigit",
-    .version = "0.1.0",
-    .minimum_zig_version = "0.13.0",
+    .name = .zigit,
+    .version = "0.1.1",
+    .fingerprint = 0x9da10f946b0317ce,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
     .paths = .{
         "build.zig",
         "build.zig.zon",

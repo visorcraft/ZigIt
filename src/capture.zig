@@ -87,7 +87,11 @@ pub const Buffer = struct {
         const x1: i32 = @intCast(@min(@as(i64, self.width), @as(i64, max_x) + 1));
         const y1: i32 = @intCast(@min(@as(i64, self.height), @as(i64, max_y) + 1));
         if (poly.points.len == 0 or x1 <= x0 or y1 <= y0) return Buffer{
-            .width = 0, .height = 0, .stride = 0, .format = self.format, .data = try allocator.alloc(u8, 0),
+            .width = 0,
+            .height = 0,
+            .stride = 0,
+            .format = self.format,
+            .data = try allocator.alloc(u8, 0),
         };
         const cw: u32 = @intCast(x1 - x0);
         const ch: u32 = @intCast(y1 - y0);
@@ -170,7 +174,14 @@ var screencopy_frame_events: [7]wl.wl_message = undefined;
 var screencopy_manager_interface: wl.wl_interface = undefined;
 var screencopy_frame_interface: wl.wl_interface = undefined;
 
-var protocol_once = std.once(initProtocolTables);
+var protocol_ready = std.atomic.Value(bool).init(false);
+
+fn ensureProtocolTables() void {
+    // Idempotent pure table writes; a race only double-initializes.
+    if (protocol_ready.load(.acquire)) return;
+    initProtocolTables();
+    protocol_ready.store(true, .release);
+}
 
 fn typePtr(offset: usize) [*c][*c]const wl.wl_interface {
     return @ptrCast(&screencopy_types[offset]);
@@ -234,7 +245,7 @@ const FRAME_DESTROY_OPCODE = 1;
 /// `registry` is a wl_registry proxy; it is opaque here because the wayland
 /// module's @cImport types are distinct from this module's.
 pub fn bindScreencopyManager(registry: *anyopaque, name: u32, version: u32) ?*anyopaque {
-    protocol_once.call();
+    ensureProtocolTables();
     const reg: *wl.wl_registry = @ptrCast(@alignCast(registry));
     return wl.wl_registry_bind(reg, name, &screencopy_manager_interface, @min(version, 3));
 }
@@ -244,7 +255,7 @@ const FrameCtx = struct {
     shm: *wl.wl_shm,
     frame: ?*wl.wl_proxy = null,
     wl_buffer: ?*wl.wl_buffer = null,
-    map: []align(std.mem.page_size) u8 = &[_]u8{},
+    map: []align(std.heap.page_size_min) u8 = &[_]u8{},
     fd: std.posix.fd_t = -1,
     result: ?Buffer = null,
     status: enum { pending, ready, failed } = .pending,
@@ -259,7 +270,7 @@ const FrameCtx = struct {
         self.wl_buffer = null;
         if (self.map.len > 0) std.posix.munmap(self.map);
         self.map = &[_]u8{};
-        if (self.fd >= 0) std.posix.close(self.fd);
+        if (self.fd >= 0) _ = std.c.close(self.fd);
         self.fd = -1;
         if (self.frame) |f| {
             // Sends the frame destroy request and destroys the proxy.
@@ -283,7 +294,7 @@ pub fn captureAllOutputs(
     const dpy: *wl.wl_display = @ptrCast(@alignCast(display));
     const mgr: *wl.wl_proxy = @ptrCast(@alignCast(manager));
     const shm_proxy: *wl.wl_shm = @ptrCast(@alignCast(shm));
-    protocol_once.call();
+    ensureProtocolTables();
 
     const bufs = try allocator.alloc(Buffer, wl_outputs.len);
     errdefer allocator.free(bufs);
@@ -327,13 +338,13 @@ pub fn captureAllOutputs(
 }
 
 const FrameListener = extern struct {
-    buffer: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32, u32) callconv(.C) void,
-    flags: *const fn (?*anyopaque, ?*wl.wl_proxy, u32) callconv(.C) void,
-    ready: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32) callconv(.C) void,
-    failed: *const fn (?*anyopaque, ?*wl.wl_proxy) callconv(.C) void,
-    damage: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32, u32) callconv(.C) void,
-    linux_dmabuf: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32) callconv(.C) void,
-    buffer_done: *const fn (?*anyopaque, ?*wl.wl_proxy) callconv(.C) void,
+    buffer: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32, u32) callconv(.c) void,
+    flags: *const fn (?*anyopaque, ?*wl.wl_proxy, u32) callconv(.c) void,
+    ready: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32) callconv(.c) void,
+    failed: *const fn (?*anyopaque, ?*wl.wl_proxy) callconv(.c) void,
+    damage: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32, u32) callconv(.c) void,
+    linux_dmabuf: *const fn (?*anyopaque, ?*wl.wl_proxy, u32, u32, u32) callconv(.c) void,
+    buffer_done: *const fn (?*anyopaque, ?*wl.wl_proxy) callconv(.c) void,
 };
 
 const frame_listener = FrameListener{
@@ -350,7 +361,7 @@ fn ctxFrom(data: ?*anyopaque) *FrameCtx {
     return @ptrCast(@alignCast(data.?));
 }
 
-fn onFrameBuffer(data: ?*anyopaque, frame: ?*wl.wl_proxy, format: u32, width: u32, height: u32, stride: u32) callconv(.C) void {
+fn onFrameBuffer(data: ?*anyopaque, frame: ?*wl.wl_proxy, format: u32, width: u32, height: u32, stride: u32) callconv(.c) void {
     _ = frame;
     const cx = ctxFrom(data);
     if (cx.status != .pending) return;
@@ -363,7 +374,7 @@ fn onFrameBuffer(data: ?*anyopaque, frame: ?*wl.wl_proxy, format: u32, width: u3
     cx.shm_offered = format == wl.WL_SHM_FORMAT_ARGB8888 or format == wl.WL_SHM_FORMAT_XRGB8888;
 }
 
-fn onFrameBufferDone(data: ?*anyopaque, frame: ?*wl.wl_proxy) callconv(.C) void {
+fn onFrameBufferDone(data: ?*anyopaque, frame: ?*wl.wl_proxy) callconv(.c) void {
     const cx = ctxFrom(data);
     if (cx.status != .pending) return;
     const f = frame orelse {
@@ -376,16 +387,16 @@ fn onFrameBufferDone(data: ?*anyopaque, frame: ?*wl.wl_proxy) callconv(.C) void 
     }
     const size: usize = @as(usize, cx.stride) * cx.height;
     const fd_rc = std.os.linux.memfd_create("zigit-capture", std.os.linux.MFD.CLOEXEC);
-    if (std.os.linux.E.init(fd_rc) != .SUCCESS) {
+    if (std.os.linux.errno(fd_rc) != .SUCCESS) {
         cx.status = .failed;
         return;
     }
     cx.fd = @intCast(fd_rc);
-    std.posix.ftruncate(cx.fd, size) catch {
+    if (std.c.ftruncate(cx.fd, @intCast(size)) != 0) {
         cx.status = .failed;
         return;
-    };
-    cx.map = std.posix.mmap(null, size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .SHARED }, cx.fd, 0) catch {
+    }
+    cx.map = std.posix.mmap(null, size, .{ .READ = true, .WRITE = true }, .{ .TYPE = .SHARED }, cx.fd, 0) catch {
         cx.status = .failed;
         return;
     };
@@ -401,7 +412,7 @@ fn onFrameBufferDone(data: ?*anyopaque, frame: ?*wl.wl_proxy) callconv(.C) void 
     _ = wl.wl_proxy_marshal_flags(f, FRAME_COPY_OPCODE, null, wl.wl_proxy_get_version(f), 0, cx.wl_buffer);
 }
 
-fn onFrameReady(data: ?*anyopaque, frame: ?*wl.wl_proxy, tv_sec_hi: u32, tv_sec_lo: u32, tv_nsec: u32) callconv(.C) void {
+fn onFrameReady(data: ?*anyopaque, frame: ?*wl.wl_proxy, tv_sec_hi: u32, tv_sec_lo: u32, tv_nsec: u32) callconv(.c) void {
     _ = frame;
     _ = tv_sec_hi;
     _ = tv_sec_lo;
@@ -424,20 +435,20 @@ fn onFrameReady(data: ?*anyopaque, frame: ?*wl.wl_proxy, tv_sec_hi: u32, tv_sec_
     cx.cleanup();
 }
 
-fn onFrameFailed(data: ?*anyopaque, frame: ?*wl.wl_proxy) callconv(.C) void {
+fn onFrameFailed(data: ?*anyopaque, frame: ?*wl.wl_proxy) callconv(.c) void {
     _ = frame;
     const cx = ctxFrom(data);
     cx.status = .failed;
     cx.cleanup();
 }
 
-fn onFrameFlags(data: ?*anyopaque, frame: ?*wl.wl_proxy, flags: u32) callconv(.C) void {
+fn onFrameFlags(data: ?*anyopaque, frame: ?*wl.wl_proxy, flags: u32) callconv(.c) void {
     _ = data;
     _ = frame;
     _ = flags;
 }
 
-fn onFrameDamage(data: ?*anyopaque, frame: ?*wl.wl_proxy, x: u32, y: u32, width: u32, height: u32) callconv(.C) void {
+fn onFrameDamage(data: ?*anyopaque, frame: ?*wl.wl_proxy, x: u32, y: u32, width: u32, height: u32) callconv(.c) void {
     _ = data;
     _ = frame;
     _ = x;
@@ -446,7 +457,7 @@ fn onFrameDamage(data: ?*anyopaque, frame: ?*wl.wl_proxy, x: u32, y: u32, width:
     _ = height;
 }
 
-fn onFrameLinuxDmabuf(data: ?*anyopaque, frame: ?*wl.wl_proxy, format: u32, width: u32, height: u32) callconv(.C) void {
+fn onFrameLinuxDmabuf(data: ?*anyopaque, frame: ?*wl.wl_proxy, format: u32, width: u32, height: u32) callconv(.c) void {
     // Only shm capture is implemented; the compositor also advertises the
     // plain "buffer" event when it supports shm.
     _ = data;

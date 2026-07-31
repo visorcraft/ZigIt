@@ -13,7 +13,7 @@
 - `zig fmt path/to/file.zig`: format a changed Zig file.
 - `./zig-out/bin/zigit daemon`: launch the main UI after building. Other entry points include `capture`, `edit PATH`, and `setup`.
 
-Use Zig 0.13.0 or newer compatible tooling. The native build links GLFW, Wayland, EGL, GLESv2, and xkbcommon development libraries.
+Use Zig 0.16.0 or newer compatible tooling. The native build links GLFW, Wayland, EGL, GLESv2, and xkbcommon development libraries.
 
 ## Coding Style & Naming Conventions
 

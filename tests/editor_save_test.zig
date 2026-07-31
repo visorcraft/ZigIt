@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const testing = std.testing;
 const editor = @import("editor");
 const png = @import("png");
@@ -10,10 +11,10 @@ test "save writes PNG file with applied ops" {
     try doc.push(.{ .rect = .{ .rect = .{ .x = 1, .y = 1, .w = 2, .h = 2 }, .thickness = 1, .color = .{ .r = 255, .g = 0, .b = 0 } } });
 
     const path = "/tmp/zigit-editor-save-test.png";
-    defer std.fs.deleteFileAbsolute(path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(app_io.get(), path) catch {};
     try doc.save(testing.allocator, path);
 
-    const bytes = try std.fs.cwd().readFileAlloc(testing.allocator, path, 1 << 16);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), path, testing.allocator, .limited(1 << 16));
     defer testing.allocator.free(bytes);
     try testing.expect(bytes.len > 8);
     try testing.expectEqual(@as(u8, 0x89), bytes[0]);
@@ -33,10 +34,10 @@ test "crop op rebases image and save writes the cropped PNG" {
     try doc.push(.{ .crop = .{ .x = 1, .y = 1, .w = 2, .h = 2 } });
 
     const path = "/tmp/zigit-editor-crop-test.png";
-    defer std.fs.deleteFileAbsolute(path) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(app_io.get(), path) catch {};
     try doc.save(testing.allocator, path);
 
-    const bytes = try std.fs.cwd().readFileAlloc(testing.allocator, path, 1 << 16);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), path, testing.allocator, .limited(1 << 16));
     defer testing.allocator.free(bytes);
     var w: u32 = 0;
     var h: u32 = 0;

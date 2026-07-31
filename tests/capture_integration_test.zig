@@ -6,8 +6,8 @@ const capture = @import("capture");
 test "captureAllOutputs returns a buffer per output" {
     // Real test requires a running compositor with zwlr_screencopy_manager_v1.
     // Skipped in CI without it: set HAVE_WAYLAND=1 and WAYLAND_DISPLAY to opt in.
-    if (std.posix.getenv("HAVE_WAYLAND") == null) return error.SkipZigTest;
-    if (std.posix.getenv("WAYLAND_DISPLAY") == null) return error.SkipZigTest;
+    if (std.c.getenv("HAVE_WAYLAND") == null) return error.SkipZigTest;
+    if (std.c.getenv("WAYLAND_DISPLAY") == null) return error.SkipZigTest;
 
     var conn = try wayland.Connection.init();
     defer conn.deinit();

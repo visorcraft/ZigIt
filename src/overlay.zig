@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const wayland = @import("wayland");
 const capture = @import("capture");
 const storage = @import("storage");
@@ -52,14 +53,14 @@ pub const Overlay = struct {
         try spawn.spectacle(allocator, mode, out_path);
         // spectacle exits 0 even when the user cancels the region pick; a
         // missing output file is a quiet cancel, not an error.
-        std.fs.accessAbsolute(out_path, .{}) catch |e| switch (e) {
+        std.Io.Dir.accessAbsolute(app_io.get(), out_path, .{}) catch |e| switch (e) {
             error.FileNotFound => {
                 std.debug.print("zigit: capture cancelled\n", .{});
                 return;
             },
             else => return e,
         };
-        const png = try std.fs.cwd().readFileAlloc(allocator, out_path, 16 * 1024 * 1024);
+        const png = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), out_path, allocator, .limited(16 * 1024 * 1024));
         defer allocator.free(png);
         try clipboard.copyPNG(allocator, png);
         try spawn.editor(allocator, out_path);

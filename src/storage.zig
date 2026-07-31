@@ -1,7 +1,13 @@
 const std = @import("std");
+const app_io = @import("app_io");
 
 /// Default relative path under $HOME when no save_dir is configured.
 pub const default_capture_rel = "screenshots";
+
+fn homeDir() ![]const u8 {
+    const z = std.c.getenv("HOME") orelse return error.NoHome;
+    return std.mem.span(z);
+}
 
 /// Returns the absolute captures directory, creating it if needed.
 ///
@@ -14,12 +20,13 @@ pub fn captureDir(allocator: std.mem.Allocator, override: []const u8) ![]u8 {
     const full = if (override.len > 0)
         try expandHome(allocator, override)
     else blk: {
-        const home = std.posix.getenv("HOME") orelse return error.NoHome;
+        const home = try homeDir();
         break :blk try std.fs.path.join(allocator, &.{ home, default_capture_rel });
     };
     errdefer allocator.free(full);
 
-    std.fs.makeDirAbsolute(full) catch |e| switch (e) {
+    const io = app_io.get();
+    std.Io.Dir.createDirAbsolute(io, full, .default_dir) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         error.FileNotFound => {
             // Parent missing — create the tree.
@@ -34,24 +41,25 @@ pub fn captureDir(allocator: std.mem.Allocator, override: []const u8) ![]u8 {
 /// Caller owns the returned slice.
 pub fn expandHome(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     if (path.len >= 2 and path[0] == '~' and path[1] == '/') {
-        const home = std.posix.getenv("HOME") orelse return error.NoHome;
+        const home = try homeDir();
         return std.fs.path.join(allocator, &.{ home, path[2..] });
     }
     if (std.mem.eql(u8, path, "~")) {
-        const home = std.posix.getenv("HOME") orelse return error.NoHome;
+        const home = try homeDir();
         return allocator.dupe(u8, home);
     }
     return allocator.dupe(u8, path);
 }
 
 fn ensureDirTree(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |e| switch (e) {
+    const io = app_io.get();
+    std.Io.Dir.createDirAbsolute(io, path, .default_dir) catch |e| switch (e) {
         error.PathAlreadyExists => return,
         error.FileNotFound => {
             if (std.fs.path.dirname(path)) |parent| {
                 if (parent.len > 0 and !std.mem.eql(u8, parent, path)) {
                     try ensureDirTree(parent);
-                    try std.fs.makeDirAbsolute(path);
+                    try std.Io.Dir.createDirAbsolute(io, path, .default_dir);
                     return;
                 }
             }
@@ -65,8 +73,9 @@ fn ensureDirTree(path: []const u8) !void {
 /// (<YYYY-MM-DD_HH-MM-SS.png>, appending _1, _2, ... on collision).
 /// Caller owns the returned slice.
 pub fn newCapturePath(allocator: std.mem.Allocator, dir: []const u8) ![]u8 {
+    const io = app_io.get();
     const stamp = blk: {
-        const ts = std.time.timestamp();
+        const ts = std.Io.Clock.real.now(app_io.get()).toSeconds();
         const epoch_sec = std.time.epoch.EpochSeconds{ .secs = @intCast(ts) };
         const year_day = epoch_sec.getEpochDay().calculateYearDay();
         const month_day = year_day.calculateMonthDay();
@@ -89,7 +98,7 @@ pub fn newCapturePath(allocator: std.mem.Allocator, dir: []const u8) ![]u8 {
             try std.fmt.allocPrint(allocator, "{s}_{d}.png", .{ stamp, attempt });
         defer allocator.free(name);
         const candidate = try std.fs.path.join(allocator, &.{ dir, name });
-        std.fs.accessAbsolute(candidate, .{}) catch |e| switch (e) {
+        std.Io.Dir.accessAbsolute(io, candidate, .{}) catch |e| switch (e) {
             error.FileNotFound => return candidate,
             else => return e,
         };
@@ -100,7 +109,8 @@ pub fn newCapturePath(allocator: std.mem.Allocator, dir: []const u8) ![]u8 {
 
 /// Writes `bytes` to `path`, truncating any existing file.
 pub fn writeFileAbsolute(path: []const u8, bytes: []const u8) !void {
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(bytes);
+    const io = app_io.get();
+    const f = try std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true });
+    defer f.close(io);
+    try f.writeStreamingAll(io, bytes);
 }

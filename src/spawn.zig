@@ -1,11 +1,15 @@
 const std = @import("std");
+const app_io = @import("app_io");
 
 pub fn editor(allocator: std.mem.Allocator, png_path: []const u8) !void {
-    var child = std.process.Child.init(&.{ "zigit", "edit", png_path }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Inherit;
-    child.spawn() catch |e| switch (e) {
+    _ = allocator;
+    const io = app_io.get();
+    _ = std.process.spawn(io, .{
+        .argv = &.{ "zigit", "edit", png_path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    }) catch |e| switch (e) {
         error.FileNotFound => return error.ZigitMissing,
         else => return e,
     };
@@ -17,20 +21,24 @@ pub fn editor(allocator: std.mem.Allocator, png_path: []const u8) !void {
 /// Deliberate override of the "no shell-outs except wl-copy" rule: this is
 /// the KDE/portal fallback for compositors without wlr-screencopy.
 pub fn spectacle(allocator: std.mem.Allocator, mode: []const u8, out_path: []const u8) !void {
-    var child = std.process.Child.init(&.{ "spectacle", "--background", "--nonotify", mode, "--output", out_path }, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Inherit;
+    _ = allocator;
+    const io = app_io.get();
     // Note: on POSIX a failed exec surfaces from wait(), not spawn().
-    const term = child.spawnAndWait() catch |e| switch (e) {
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "spectacle", "--background", "--nonotify", mode, "--output", out_path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .inherit,
+    }) catch |e| switch (e) {
         error.FileNotFound => {
             std.debug.print("zigit: spectacle not found; install it (e.g. 'sudo apt install spectacle') for KDE/portal compositors\n", .{});
             return error.SpectacleMissing;
         },
         else => return e,
     };
+    const term = try child.wait(io);
     switch (term) {
-        .Exited => |code| if (code != 0) {
+        .exited => |code| if (code != 0) {
             std.debug.print("zigit: spectacle exited with code {d}\n", .{code});
             return error.SpectacleFailed;
         },

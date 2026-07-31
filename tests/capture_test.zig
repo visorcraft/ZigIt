@@ -24,7 +24,10 @@ test "BGRA to RGBA swaps R and B channels" {
 
 test "RGBA buffer is returned unchanged" {
     const b = capture.Buffer{
-        .width = 1, .height = 1, .stride = 4, .format = .rgba,
+        .width = 1,
+        .height = 1,
+        .stride = 4,
+        .format = .rgba,
         .data = &[_]u8{ 0xaa, 0xbb, 0xcc, 0xdd },
     };
     const r = try b.toRGBA(testing.allocator);
@@ -41,8 +44,11 @@ test "cropRect extracts a sub-region" {
         data[i * 4 + 3] = 255;
     }
     const b = capture.Buffer{
-        .width = 16, .height = 16, .stride = 16 * 4,
-        .format = .rgba, .data = &data,
+        .width = 16,
+        .height = 16,
+        .stride = 16 * 4,
+        .format = .rgba,
+        .data = &data,
     };
     const out = try b.cropRect(testing.allocator, .{ .x = 4, .y = 4, .w = 4, .h = 4 });
     defer testing.allocator.free(out.data);
@@ -55,8 +61,11 @@ test "cropRect extracts a sub-region" {
 test "cropRect clamps to buffer bounds" {
     const data = [_]u8{0x77} ** (4 * 4 * 4);
     const b = capture.Buffer{
-        .width = 4, .height = 4, .stride = 4 * 4,
-        .format = .rgba, .data = &data,
+        .width = 4,
+        .height = 4,
+        .stride = 4 * 4,
+        .format = .rgba,
+        .data = &data,
     };
     const out = try b.cropRect(testing.allocator, .{ .x = -2, .y = -2, .w = 10, .h = 10 });
     defer testing.allocator.free(out.data);
@@ -67,8 +76,11 @@ test "cropRect clamps to buffer bounds" {
 test "cropToplevel crops to the toplevel bounds" {
     const data = [_]u8{0x11} ** (8 * 8 * 4);
     const b = capture.Buffer{
-        .width = 8, .height = 8, .stride = 8 * 4,
-        .format = .rgba, .data = &data,
+        .width = 8,
+        .height = 8,
+        .stride = 8 * 4,
+        .format = .rgba,
+        .data = &data,
     };
     const out = try b.cropToplevel(testing.allocator, .{ .x = 2, .y = 2, .w = 3, .h = 3 });
     defer testing.allocator.free(out.data);

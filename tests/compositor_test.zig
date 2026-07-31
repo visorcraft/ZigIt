@@ -1,11 +1,12 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const testing = std.testing;
 const cmp = @import("compositor");
 
 const EnvSlice = []const []const u8;
 
 fn detectWith(env: EnvSlice) !cmp.Compositor {
-    var map = std.process.EnvMap.init(testing.allocator);
+    var map = std.process.Environ.Map.init(testing.allocator);
     defer map.deinit();
     for (env) |kv| {
         const eq = std.mem.indexOfScalar(u8, kv, '=').?;
@@ -28,23 +29,23 @@ test "unknown when no markers" {
 
 test "river detected by socket in XDG_RUNTIME_DIR" {
     const tmp = "/tmp/zigit-test-rt";
-    try std.fs.makeDirAbsolute(tmp);
-    defer std.fs.deleteTreeAbsolute(tmp) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), tmp, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), tmp) catch {};
     // Create a dummy river.sock file (empty; we only stat it).
     {
-        const f = try std.fs.createFileAbsolute(tmp ++ "/river.sock", .{});
-        f.close();
+        const f = try std.Io.Dir.createFileAbsolute(app_io.get(), tmp ++ "/river.sock", .{});
+        f.close(app_io.get());
     }
     try testing.expectEqual(cmp.Compositor.river, try detectWith(&.{"XDG_RUNTIME_DIR=" ++ tmp}));
 }
 
 test "labwc detected by socket in XDG_RUNTIME_DIR" {
     const tmp = "/tmp/zigit-test-rt-labwc";
-    try std.fs.makeDirAbsolute(tmp);
-    defer std.fs.deleteTreeAbsolute(tmp) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), tmp, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), tmp) catch {};
     {
-        const f = try std.fs.createFileAbsolute(tmp ++ "/labwc.sock", .{});
-        f.close();
+        const f = try std.Io.Dir.createFileAbsolute(app_io.get(), tmp ++ "/labwc.sock", .{});
+        f.close(app_io.get());
     }
     try testing.expectEqual(cmp.Compositor.labwc, try detectWith(&.{"XDG_RUNTIME_DIR=" ++ tmp}));
 }

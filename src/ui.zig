@@ -1,4 +1,6 @@
 const std = @import("std");
+const app_io = @import("app_io");
+const app_icon = @import("app_icon");
 const c = @cImport({
     @cInclude("GLFW/glfw3.h");
     @cInclude("GLES2/gl2.h");
@@ -110,14 +112,19 @@ const SettingsForm = struct {
 
 pub const Ui = struct {
     pub fn run(allocator: std.mem.Allocator) !void {
+        // Icons + desktop entry for Wayland titlebar/taskbar (app_id lookup).
+        app_icon.installUserChrome(allocator);
+
         if (c.glfwInit() == 0) return error.GlfwInitFailed;
         defer c.glfwTerminate();
         c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_OPENGL_ES_API);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 0);
+        app_icon.applyWindowHints(c);
         const w = c.glfwCreateWindow(820, 560, "ZigIt", null, null);
         if (w == null) return error.WindowFailed;
         defer c.glfwDestroyWindow(w);
+        app_icon.setWindowIcon(c, w);
         c.glfwMakeContextCurrent(w);
         c.glfwSwapInterval(1);
 
@@ -150,7 +157,7 @@ pub const Ui = struct {
         var form: SettingsForm = .{};
         form.fromConfig(cfg);
 
-        var env = try std.process.getEnvMap(allocator);
+        var env = try app_io.processEnvMap(allocator);
         defer env.deinit();
         const detected = compositor.detect(&env);
         if (detected == .unknown) {
@@ -444,8 +451,12 @@ fn drawSettings(
         c.igSameLine(0.0, 10.0);
         theme_mod.pushGhost();
         if (c.igButton("Dry-run setup", .{ .x = 130, .y = 34 })) {
-            var child = std.process.Child.init(&.{ "zigit", "setup", "--dry-run" }, allocator);
-            child.spawn() catch |e| {
+            _ = std.process.spawn(app_io.get(), .{
+                .argv = &.{ "zigit", "setup", "--dry-run" },
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .inherit,
+            }) catch |e| {
                 std.debug.print("zigit: setup spawn failed: {s}\n", .{@errorName(e)});
             };
             toast.show(.info, "Ran setup --dry-run (see terminal)") catch {};
@@ -687,15 +698,14 @@ fn pollHotkeyChord(form: *SettingsForm) bool {
         if (!c.igIsKeyPressed_Bool(k.key, false)) continue;
 
         var buf: [64]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const w = fbs.writer();
+        var w: std.Io.Writer = .fixed(&buf);
         // Order matches common compositor convention: Super, Ctrl, Alt, Shift, key.
         if (super) w.writeAll("Super+") catch {};
         if (ctrl) w.writeAll("Ctrl+") catch {};
         if (alt) w.writeAll("Alt+") catch {};
         if (shift) w.writeAll("Shift+") catch {};
         w.writeAll(k.name) catch {};
-        form.setHotkey(fbs.getWritten());
+        form.setHotkey(w.buffered());
         return true;
     }
     return false;
@@ -731,39 +741,33 @@ fn pickDirectory(allocator: std.mem.Allocator, start: []const u8) !?[]u8 {
 }
 
 fn runDirPicker(allocator: std.mem.Allocator, argv: []const []const u8) !?[]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return null;
-    const raw = child.stdout.?.readToEndAlloc(allocator, 4096) catch {
-        _ = child.wait() catch {};
-        return null;
-    };
-    errdefer allocator.free(raw);
-    const term = child.wait() catch {
-        allocator.free(raw);
-        return null;
-    };
-    switch (term) {
-        .Exited => |code| {
+    const io = app_io.get();
+    const result = std.process.run(allocator, io, .{
+        .argv = argv,
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| {
             if (code != 0) {
-                allocator.free(raw);
+                allocator.free(result.stdout);
                 return null; // cancel
             }
         },
         else => {
-            allocator.free(raw);
+            allocator.free(result.stdout);
             return null;
         },
     }
-    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
     if (trimmed.len == 0) {
-        allocator.free(raw);
+        allocator.free(result.stdout);
         return null;
     }
     // Return a clean dupe of the trimmed path; free the raw buffer.
     const out = try allocator.dupe(u8, trimmed);
-    allocator.free(raw);
+    allocator.free(result.stdout);
     return out;
 }
 
@@ -789,8 +793,8 @@ fn installBinding(
 ) !void {
     form.hotkey_len = std.mem.len(@as([*:0]const u8, @ptrCast(&form.hotkey)));
     const hotkey = form.hotkey[0..form.hotkey_len];
-    const home = std.posix.getenv("HOME") orelse return error.NoHome;
-    const exe = try std.fs.selfExePathAlloc(allocator);
+    const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.NoHome;
+    const exe = try std.process.executablePathAlloc(app_io.get(), allocator);
     defer allocator.free(exe);
     const action = try std.fmt.allocPrint(allocator, "\"{s}\" capture --overlay", .{exe});
     defer allocator.free(action);
@@ -833,7 +837,7 @@ fn uninstallBinding(
     detected: compositor.Compositor,
     toast: *toast_mod.Toast,
 ) !void {
-    const home = std.posix.getenv("HOME") orelse return error.NoHome;
+    const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.NoHome;
     const path = try compositor.snippetPathFor(allocator, detected, home);
     defer allocator.free(path);
     const binding = compositor.Binding{ .snippetPath = path, .reload = .none, .snippet = &.{} };
@@ -843,8 +847,13 @@ fn uninstallBinding(
 }
 
 fn spawnCapture(allocator: std.mem.Allocator, argv: []const []const u8, toast: *toast_mod.Toast) void {
-    var child = std.process.Child.init(argv, allocator);
-    child.spawn() catch |e| {
+    _ = allocator;
+    _ = std.process.spawn(app_io.get(), .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |e| {
         std.debug.print("zigit: capture spawn failed: {s}\n", .{@errorName(e)});
         toast.show(.@"error", "Failed to start capture") catch {};
         return;
@@ -853,9 +862,14 @@ fn spawnCapture(allocator: std.mem.Allocator, argv: []const []const u8, toast: *
 }
 
 fn openFolder(allocator: std.mem.Allocator, dir: []const u8, toast: *toast_mod.Toast) void {
+    _ = allocator;
     // xdg-open is the portable Linux choice.
-    var child = std.process.Child.init(&.{ "xdg-open", dir }, allocator);
-    child.spawn() catch |e| {
+    _ = std.process.spawn(app_io.get(), .{
+        .argv = &.{ "xdg-open", dir },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |e| {
         std.debug.print("zigit: open folder failed: {s}\n", .{@errorName(e)});
         toast.show(.@"error", "Could not open captures folder") catch {};
         return;
@@ -865,7 +879,7 @@ fn openFolder(allocator: std.mem.Allocator, dir: []const u8, toast: *toast_mod.T
 /// Thread-local-ish scratch for NUL-terminated paths passed to ImGui.
 /// ImGui reads the pointer during the call only, so a static buffer is fine
 /// as long as we don't nest two pathCstr uses in one printf (we don't).
-var path_scratch: [std.fs.max_path_bytes]u8 = undefined;
+var path_scratch: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
 fn pathCstr(path: []const u8) [*:0]const u8 {
     const n = @min(path.len, path_scratch.len - 1);

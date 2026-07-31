@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packaging/icons/512x512/apps/com.visorcraft.zigit.png" alt="ZigIt logo" width="220">
+</p>
+
 <h1 align="center">ZigIt</h1>
 
 <p align="center">
@@ -13,7 +17,7 @@ ZigIt is a Wayland-first alternative to capture tools that stop after writing
 a file. A daemon keeps recent screenshots visible, settings stay in a plain
 TOML file, and one binary provides capture, editing, and compositor setup.
 
-Current release: **0.1.0**.
+Current release: **0.1.1**.
 
 ## Why ZigIt?
 
@@ -29,22 +33,50 @@ Current release: **0.1.0**.
 - **Plain configuration:** preferences live at
   `~/.config/zigit/config.toml` or `$XDG_CONFIG_HOME/zigit/config.toml`.
 
-## Build from source
+## Install from AUR
 
-ZigIt requires Zig 0.13.0, a C++ toolchain, GLFW, Wayland, EGL/GLESv2,
-xkbcommon, and `wl-copy`. KDE capture also requires its system capture service.
-
-Arch Linux and CachyOS dependencies:
+On Arch Linux and derivatives (CachyOS, EndeavourOS, Manjaro, …), install the
+[`zigit`](https://aur.archlinux.org/packages/zigit) package with an AUR helper:
 
 ```bash
-sudo pacman -S base-devel glfw wayland libxkbcommon mesa wl-clipboard
+paru -S zigit
+# or
+yay -S zigit
+```
+
+That pulls the tagged release from GitHub and builds it with the system Zig
+toolchain. After install, the binary is on your `PATH` as `zigit`:
+
+```bash
+zigit --version
+zigit setup --dry-run
+zigit daemon
+```
+
+Without a helper, clone and build the package by hand:
+
+```bash
+git clone https://aur.archlinux.org/zigit.git
+cd zigit
+makepkg -si
+```
+
+## Build from source
+
+ZigIt requires Zig 0.16.0, a C++ toolchain, GLFW, Wayland, EGL/GLESv2,
+xkbcommon, and `wl-copy`. KDE capture also requires its system capture service.
+
+Arch Linux and CachyOS dependencies (when not using the AUR package):
+
+```bash
+sudo pacman -S base-devel zig glfw wayland libxkbcommon mesa wl-clipboard
 ```
 
 Build and test:
 
 ```bash
-git clone https://github.com/visorcraft/zigit.git
-cd zigit
+git clone https://github.com/visorcraft/ZigIt.git
+cd ZigIt
 zig build
 zig build test
 ```

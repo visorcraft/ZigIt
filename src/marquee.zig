@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const c = @cImport({
     @cInclude("GLES2/gl2.h");
     // Without this define cimgui.h falls back to C++ template typedefs
@@ -24,7 +25,7 @@ fn uploadTexture(rgba: []const u8, w: u32, h: u32) c_uint {
 pub const Marquee = struct {
     allocator: std.mem.Allocator,
     dir: []const u8,
-    thumbnails: std.ArrayList(Thumbnail),
+    thumbnails: std.array_list.Managed(Thumbnail),
     watch: watcher.Watcher,
 
     pub const Thumbnail = struct {
@@ -39,7 +40,7 @@ pub const Marquee = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, dir: []const u8) !Marquee {
-        var thumbs = std.ArrayList(Thumbnail).init(allocator);
+        var thumbs = std.array_list.Managed(Thumbnail).init(allocator);
         // On any failure, free both the backing array and every path string
         // already appended.
         errdefer {
@@ -47,10 +48,11 @@ pub const Marquee = struct {
             thumbs.deinit();
         }
         // Pre-load existing PNGs in dir.
-        var d = try std.fs.openDirAbsolute(dir, .{ .iterate = true });
-        defer d.close();
+        const io = app_io.get();
+        var d = try std.Io.Dir.openDirAbsolute(io, dir, .{ .iterate = true });
+        defer d.close(io);
         var it = d.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(io)) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".png")) continue;
             const p = try std.fs.path.join(allocator, &.{ dir, entry.name });
@@ -99,10 +101,11 @@ pub const Marquee = struct {
             for (self.thumbnails.items) |t| freeThumb(self.allocator, t);
             self.thumbnails.clearRetainingCapacity();
         }
-        var d = try std.fs.openDirAbsolute(self.dir, .{ .iterate = true });
-        defer d.close();
+        const io = app_io.get();
+        var d = try std.Io.Dir.openDirAbsolute(io, self.dir, .{ .iterate = true });
+        defer d.close(io);
         var it = d.iterate();
-        while (try it.next()) |entry| {
+        while (try it.next(io)) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, ".png")) continue;
             const p = try std.fs.path.join(self.allocator, &.{ self.dir, entry.name });
@@ -114,7 +117,7 @@ pub const Marquee = struct {
         sortNewestFirst(&self.thumbnails);
     }
 
-    fn sortNewestFirst(thumbs: *std.ArrayList(Thumbnail)) void {
+    fn sortNewestFirst(thumbs: *std.array_list.Managed(Thumbnail)) void {
         // Lexicographic reverse on basename works for our timestamped names
         // (YYYY-MM-DD_HH-MM-SS.png sorts chronologically).
         std.mem.sort(Thumbnail, thumbs.items, {}, struct {
@@ -131,7 +134,7 @@ pub const Marquee = struct {
     // running and the entry is skipped.
     fn ensureTexture(self: *Marquee, t: *Thumbnail) void {
         if (t.texture != 0 or t.broken) return;
-        const bytes = std.fs.cwd().readFileAlloc(self.allocator, t.path, 32 * 1024 * 1024) catch |e| {
+        const bytes = std.Io.Dir.cwd().readFileAlloc(app_io.get(), t.path, self.allocator, .limited(32 * 1024 * 1024)) catch |e| {
             std.debug.print("zigit: marquee: cannot read {s}: {s}\n", .{ t.path, @errorName(e) });
             t.broken = true;
             return;
@@ -183,8 +186,10 @@ pub const Marquee = struct {
             var id_buf: [32]u8 = undefined;
             const id_z = std.fmt.bufPrintZ(&id_buf, "##card{d}", .{i}) catch "##card";
             // Pull card fill from the active theme so light mode stays readable.
-            const style = c.igGetStyle();
-            c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, style.*.Colors[c.ImGuiCol_FrameBg]);
+            const style = c.igGetStyle().*;
+            // ImGuiCol_FrameBg == 7; index as usize for Zig 0.16 C array access.
+            const frame_bg: c.ImVec4 = style.Colors[7];
+            c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, frame_bg);
             c.igPushStyleVar_Float(c.ImGuiStyleVar_ChildRounding, 8.0);
             _ = c.igBeginChild_Str(id_z.ptr, .{ .x = card_w, .y = card_h }, c.ImGuiChildFlags_Borders, 0);
 
@@ -199,7 +204,7 @@ pub const Marquee = struct {
                 const pad_x = @max(0, (card_w - 16.0 - size.x) * 0.5);
                 if (pad_x > 0) c.igSetCursorPosX(c.igGetCursorPosX() + pad_x);
 
-                var buf: [std.fs.max_path_bytes]u8 = undefined;
+                var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
                 const n = @min(t.path.len, buf.len - 1);
                 @memcpy(buf[0..n], t.path[0..n]);
                 buf[n] = 0;
@@ -212,8 +217,12 @@ pub const Marquee = struct {
                     .{ .x = 0, .y = 0, .z = 0, .w = 0 },
                     .{ .x = 1, .y = 1, .z = 1, .w = 1 },
                 )) {
-                    var child = std.process.Child.init(&.{ "zigit", "edit", t.path }, self.allocator);
-                    child.spawn() catch |e| {
+                    _ = std.process.spawn(app_io.get(), .{
+                        .argv = &.{ "zigit", "edit", t.path },
+                        .stdin = .ignore,
+                        .stdout = .ignore,
+                        .stderr = .ignore,
+                    }) catch |e| {
                         std.debug.print("zigit: failed to open editor for {s}: {s}\n", .{ t.path, @errorName(e) });
                     };
                 }
@@ -223,16 +232,24 @@ pub const Marquee = struct {
                 // Right-click context menu.
                 if (c.igBeginPopupContextItem(buf[0..n :0].ptr, 1)) {
                     if (c.igMenuItem_Bool("Open", null, false, true)) {
-                        var child = std.process.Child.init(&.{ "zigit", "edit", t.path }, self.allocator);
-                        child.spawn() catch {};
+                        _ = std.process.spawn(app_io.get(), .{
+                            .argv = &.{ "zigit", "edit", t.path },
+                            .stdin = .ignore,
+                            .stdout = .ignore,
+                            .stderr = .ignore,
+                        }) catch {};
                     }
                     if (c.igMenuItem_Bool("Copy path", null, false, true)) {
                         // Best-effort: wl-copy the path as text.
-                        var child = std.process.Child.init(&.{ "wl-copy", t.path }, self.allocator);
-                        child.spawn() catch {};
+                        _ = std.process.spawn(app_io.get(), .{
+                            .argv = &.{ "wl-copy", t.path },
+                            .stdin = .ignore,
+                            .stdout = .ignore,
+                            .stderr = .ignore,
+                        }) catch {};
                     }
                     if (c.igMenuItem_Bool("Delete", null, false, true)) {
-                        std.fs.deleteFileAbsolute(t.path) catch |e| {
+                        std.Io.Dir.deleteFileAbsolute(app_io.get(), t.path) catch |e| {
                             std.debug.print("zigit: delete failed: {s}\n", .{@errorName(e)});
                         };
                     }
@@ -243,7 +260,7 @@ pub const Marquee = struct {
             }
 
             const name = std.fs.path.basename(t.path);
-            var nbuf: [std.fs.max_path_bytes]u8 = undefined;
+            var nbuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const m = @min(name.len, nbuf.len - 1);
             @memcpy(nbuf[0..m], name[0..m]);
             nbuf[m] = 0;

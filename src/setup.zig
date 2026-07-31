@@ -1,8 +1,13 @@
 const std = @import("std");
+const app_io = @import("app_io");
+const app_icon = @import("app_icon");
 const compositor = @import("compositor");
 const config = @import("config");
 
 pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+    // Desktop icons for Wayland titlebar/taskbar (app_id → icon theme).
+    app_icon.installUserChrome(allocator);
+
     var dry_run = false;
     var uninstall = false;
     var explicit: ?compositor.Compositor = null;
@@ -12,7 +17,7 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
         if (std.mem.eql(u8, argv[i], "--uninstall")) uninstall = true;
         if (std.mem.startsWith(u8, argv[i], "--compositor=")) {
             const v = argv[i][std.mem.indexOf(u8, argv[i], "=").? + 1 ..];
-            inline for (@typeInfo(compositor.Compositor).Enum.fields) |f| {
+            inline for (@typeInfo(compositor.Compositor).@"enum".fields) |f| {
                 if (std.mem.eql(u8, v, f.name)) {
                     explicit = @field(compositor.Compositor, f.name);
                 }
@@ -20,12 +25,12 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
         }
     }
 
-    var env = try std.process.getEnvMap(allocator);
+    var env = try app_io.processEnvMap(allocator);
     defer env.deinit();
     const detected = compositor.detect(&env);
     const kind = explicit orelse detected;
 
-    const home = std.posix.getenv("HOME") orelse return error.NoHome;
+    const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.NoHome;
 
     if (uninstall) {
         const path = try compositor.snippetPathFor(allocator, kind, home);
@@ -49,7 +54,7 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     defer if (!std.mem.eql(u8, cfg_path, "/dev/null")) allocator.free(cfg_path);
     const cfg = try config.Config.load(allocator, cfg_path);
     defer cfg.deinit(allocator);
-    const exe = try std.fs.selfExePathAlloc(allocator);
+    const exe = try std.process.executablePathAlloc(app_io.get(), allocator);
     defer allocator.free(exe);
     const action = try std.fmt.allocPrint(allocator, "\"{s}\" capture --overlay", .{exe});
     defer allocator.free(action);

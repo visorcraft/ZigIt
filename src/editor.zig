@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const png = @import("png");
 const storage = @import("storage");
 
@@ -28,8 +29,8 @@ pub const Image = struct {
 
 pub const Document = struct {
     base: Image,
-    ops: std.ArrayList(Op),
-    redo_stack: std.ArrayList(Op),
+    ops: std.array_list.Managed(Op),
+    redo_stack: std.array_list.Managed(Op),
 
     pub fn init(allocator: std.mem.Allocator, w: u32, h: u32) !Document {
         // usize math: w * h * 4 can overflow u32 for large captures.
@@ -37,8 +38,8 @@ pub const Document = struct {
         errdefer allocator.free(pixels);
         return .{
             .base = .{ .width = w, .height = h, .pixels = pixels },
-            .ops = std.ArrayList(Op).init(allocator),
-            .redo_stack = std.ArrayList(Op).init(allocator),
+            .ops = std.array_list.Managed(Op).init(allocator),
+            .redo_stack = std.array_list.Managed(Op).init(allocator),
         };
     }
 
@@ -59,13 +60,13 @@ pub const Document = struct {
 
     pub fn undo(self: *Document) void {
         if (self.ops.items.len == 0) return;
-        const op = self.ops.pop();
+        const op = self.ops.pop() orelse return;
         self.redo_stack.append(op) catch return;
     }
 
     pub fn redo(self: *Document) void {
         if (self.redo_stack.items.len == 0) return;
-        const op = self.redo_stack.pop();
+        const op = self.redo_stack.pop() orelse return;
         self.ops.append(op) catch return;
     }
 
@@ -103,7 +104,7 @@ pub const Document = struct {
         const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
         defer allocator.free(tmp_path);
         try storage.writeFileAbsolute(tmp_path, bytes);
-        try std.fs.renameAbsolute(tmp_path, path);
+        try std.Io.Dir.renameAbsolute(tmp_path, path, app_io.get());
     }
 };
 

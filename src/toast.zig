@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const c = @cImport({
     // Without this define cimgui.h falls back to C++ template typedefs
     // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
@@ -13,7 +14,7 @@ const max_toasts: usize = 8;
 
 pub const Toast = struct {
     allocator: std.mem.Allocator,
-    items: std.ArrayList(Item),
+    items: std.array_list.Managed(Item),
 
     pub const Item = struct {
         level: Level,
@@ -23,7 +24,7 @@ pub const Toast = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) Toast {
-        return .{ .allocator = allocator, .items = std.ArrayList(Item).init(allocator) };
+        return .{ .allocator = allocator, .items = std.array_list.Managed(Item).init(allocator) };
     }
 
     pub fn deinit(self: *Toast) void {
@@ -34,7 +35,7 @@ pub const Toast = struct {
     pub fn show(self: *Toast, level: Level, msg: []const u8) !void {
         const copy = try self.allocator.dupeZ(u8, msg);
         errdefer self.freeMsg(copy);
-        const deadline = std.time.milliTimestamp() + 3500;
+        const deadline = std.Io.Clock.real.now(app_io.get()).toMilliseconds() + 3500;
         try self.items.append(.{ .level = level, .msg = copy, .deadline_ms = deadline });
         // Cap the list: drop the oldest toasts when it grows past max_toasts.
         while (self.items.items.len > max_toasts) {
@@ -44,7 +45,7 @@ pub const Toast = struct {
     }
 
     pub fn draw(self: *Toast) void {
-        const now = std.time.milliTimestamp();
+        const now = std.Io.Clock.real.now(app_io.get()).toMilliseconds();
         var i: usize = 0;
         while (i < self.items.items.len) {
             if (self.items.items[i].deadline_ms < now) {

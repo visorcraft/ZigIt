@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 
 pub const Compositor = enum {
     sway,
@@ -22,7 +23,7 @@ pub const Compositor = enum {
     }
 };
 
-pub fn detect(env: *std.process.EnvMap) Compositor {
+pub fn detect(env: *std.process.Environ.Map) Compositor {
     if (env.get("SWAYSOCK") != null) return .sway;
     if (env.get("HYPRLAND_INSTANCE_SIGNATURE") != null) return .hyprland;
 
@@ -41,10 +42,11 @@ pub fn detect(env: *std.process.EnvMap) Compositor {
 }
 
 fn detectSocket(rtdir: []const u8, name: []const u8) bool {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/{s}.sock", .{ rtdir, name }) catch return false;
-    const f = std.fs.openFileAbsolute(path, .{}) catch return false;
-    f.close();
+    const io = app_io.get();
+    const f = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return false;
+    f.close(io);
     return true;
 }
 
@@ -179,22 +181,21 @@ fn kdeHotkey(allocator: std.mem.Allocator, hotkey: []const u8) ![]u8 {
     return allocator.dupe(u8, hotkey);
 }
 
-fn readExisting(allocator: std.mem.Allocator, path: []const u8, out: *std.ArrayList(u8)) !void {
-    if (std.fs.openFileAbsolute(path, .{})) |f| {
-        defer f.close();
-        const buf = try f.readToEndAlloc(allocator, max_config_bytes);
-        defer allocator.free(buf);
-        try out.appendSlice(buf);
-    } else |e| switch (e) {
-        error.FileNotFound => {},
+fn readExisting(allocator: std.mem.Allocator, path: []const u8, out: *std.array_list.Managed(u8)) !void {
+    const io = app_io.get();
+    const buf = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(max_config_bytes)) catch |e| switch (e) {
+        error.FileNotFound => return,
         else => return e,
-    }
+    };
+    defer allocator.free(buf);
+    try out.appendSlice(buf);
 }
 
 fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(content);
+    const io = app_io.get();
+    const f = try std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true });
+    defer f.close(io);
+    try f.writeStreamingAll(io, content);
 }
 
 fn kdeEntryRange(content: []const u8, section: Range, key: []const u8) ?Range {
@@ -218,7 +219,7 @@ fn kdeEntryValue(content: []const u8, header: []const u8, key: []const u8) ?[]co
     return content[entry.start + key.len + 1 .. end];
 }
 
-fn setKdeEntry(content: *std.ArrayList(u8), header: []const u8, key: []const u8, value: []const u8) !void {
+fn setKdeEntry(content: *std.array_list.Managed(u8), header: []const u8, key: []const u8, value: []const u8) !void {
     const line = try std.fmt.allocPrint(content.allocator, "{s}={s}\n", .{ key, value });
     defer content.allocator.free(line);
     if (kdeSectionRange(content.items, header)) |section| {
@@ -236,10 +237,12 @@ fn setKdeEntry(content: *std.ArrayList(u8), header: []const u8, key: []const u8,
         return;
     }
     if (content.items.len > 0 and content.items[content.items.len - 1] != '\n') try content.append('\n');
-    try content.writer().print("{s}\n{s}", .{ header, line });
+    try content.appendSlice(header);
+    try content.append('\n');
+    try content.appendSlice(line);
 }
 
-fn removeKdeEntry(content: *std.ArrayList(u8), header: []const u8, key: []const u8) !void {
+fn removeKdeEntry(content: *std.array_list.Managed(u8), header: []const u8, key: []const u8) !void {
     const section = kdeSectionRange(content.items, header) orelse return;
     const entry = kdeEntryRange(content.items, section, key) orelse return;
     try content.replaceRange(entry.start, entry.end - entry.start, "");
@@ -272,7 +275,7 @@ fn writeKdeLauncher(
 ) !void {
     const path = try kdeLauncherPath(allocator, home);
     defer allocator.free(path);
-    if (std.fs.path.dirname(path)) |dir| try std.fs.cwd().makePath(dir);
+    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     const key = try kdeHotkey(allocator, hotkey);
     defer allocator.free(key);
     const desktop = try std.fmt.allocPrint(allocator, "[Desktop Entry]\n" ++
@@ -280,7 +283,7 @@ fn writeKdeLauncher(
         "Name=ZigIt Capture\n" ++
         "Comment=Capture a screenshot with ZigIt\n" ++
         "Exec={s}\n" ++
-        "Icon=camera-photo\n" ++
+        "Icon=com.visorcraft.zigit\n" ++
         "NoDisplay=true\n" ++
         "X-KDE-Shortcuts={s}\n", .{ action, key });
     defer allocator.free(desktop);
@@ -305,22 +308,28 @@ fn backupKdeShortcut(
 ) !void {
     const path = try kdeBackupPath(allocator, home);
     defer allocator.free(path);
-    if (std.fs.accessAbsolute(path, .{})) |_| return else |e| switch (e) {
+    if (std.Io.Dir.accessAbsolute(app_io.get(), path, .{})) |_| return else |e| switch (e) {
         error.FileNotFound => {},
         else => return e,
     }
-    if (std.fs.path.dirname(path)) |dir| try std.fs.cwd().makePath(dir);
+    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     const header = try std.fmt.allocPrint(allocator, "[services][{s}]", .{owner.component});
     defer allocator.free(header);
-    var backup = std.ArrayList(u8).init(allocator);
+    var backup = std.array_list.Managed(u8).init(allocator);
     defer backup.deinit();
-    try backup.writer().print("component={s}\naction={s}\nsection={s}\n", .{
-        owner.component,
-        owner.action,
-        if (kdeSectionRange(content, header) != null) "true" else "false",
-    });
+    {
+        const head = try std.fmt.allocPrint(allocator, "component={s}\naction={s}\nsection={s}\n", .{
+            owner.component,
+            owner.action,
+            if (kdeSectionRange(content, header) != null) "true" else "false",
+        });
+        defer allocator.free(head);
+        try backup.appendSlice(head);
+    }
     if (kdeEntryValue(content, header, owner.action)) |value| {
-        try backup.writer().print("value={s}\n", .{value});
+        const line = try std.fmt.allocPrint(allocator, "value={s}\n", .{value});
+        defer allocator.free(line);
+        try backup.appendSlice(line);
     }
     try writeFileAbsolute(path, backup.items);
 }
@@ -328,11 +337,11 @@ fn backupKdeShortcut(
 fn restoreKdeShortcut(
     allocator: std.mem.Allocator,
     home: []const u8,
-    content: *std.ArrayList(u8),
+    content: *std.array_list.Managed(u8),
 ) !?[]u8 {
     const path = try kdeBackupPath(allocator, home);
     errdefer allocator.free(path);
-    const backup = std.fs.cwd().readFileAlloc(allocator, path, 4096) catch |e| switch (e) {
+    const backup = std.Io.Dir.cwd().readFileAlloc(app_io.get(), path, allocator, .limited(4096)) catch |e| switch (e) {
         error.FileNotFound => {
             allocator.free(path);
             return null;
@@ -370,7 +379,7 @@ pub fn overrideKdeShortcut(
     if (!owner.isSpectacle()) return error.HotkeyConflict;
     const path = try snippetPathFor(allocator, .kde, home);
     defer allocator.free(path);
-    var content = std.ArrayList(u8).init(allocator);
+    var content = std.array_list.Managed(u8).init(allocator);
     defer content.deinit();
     try readExisting(allocator, path, &content);
     try backupKdeShortcut(allocator, home, content.items, owner);
@@ -398,12 +407,12 @@ pub fn install(
     errdefer allocator.free(path);
 
     if (std.fs.path.dirname(path)) |dir| {
-        try std.fs.cwd().makePath(dir);
+        try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     }
 
     const reload_kind = reloadFor(compositor_enum);
 
-    var content = std.ArrayList(u8).init(allocator);
+    var content = std.array_list.Managed(u8).init(allocator);
     defer content.deinit();
     var restored_kde_backup: ?[]u8 = null;
     defer if (restored_kde_backup) |backup| allocator.free(backup);
@@ -452,7 +461,7 @@ pub fn install(
     }
 
     try writeFileAbsolute(path, content.items);
-    if (restored_kde_backup) |backup| std.fs.deleteFileAbsolute(backup) catch {};
+    if (restored_kde_backup) |backup| std.Io.Dir.deleteFileAbsolute(app_io.get(), backup) catch {};
 
     return .{ .snippetPath = path, .reload = reload_kind, .snippet = snippet };
 }
@@ -465,7 +474,7 @@ pub fn uninstall(
     switch (compositor_enum) {
         .sway, .hyprland, .river => {
             // Dedicated zigit-owned file: delete it outright.
-            std.fs.deleteFileAbsolute(binding.snippetPath) catch |e| switch (e) {
+            std.Io.Dir.deleteFileAbsolute(app_io.get(), binding.snippetPath) catch |e| switch (e) {
                 error.FileNotFound => {},
                 else => return e,
             };
@@ -473,7 +482,7 @@ pub fn uninstall(
         .labwc, .kde => {
             // Shared user config: remove only the zigit-owned content and
             // rewrite the rest of the file untouched.
-            var content = std.ArrayList(u8).init(allocator);
+            var content = std.array_list.Managed(u8).init(allocator);
             defer content.deinit();
             try readExisting(allocator, binding.snippetPath, &content);
             if (compositor_enum == .labwc) {
@@ -491,12 +500,12 @@ pub fn uninstall(
                 }
                 const launcher_path = try kdeLauncherPath(allocator, home);
                 defer allocator.free(launcher_path);
-                std.fs.deleteFileAbsolute(launcher_path) catch |e| switch (e) {
+                std.Io.Dir.deleteFileAbsolute(app_io.get(), launcher_path) catch |e| switch (e) {
                     error.FileNotFound => {},
                     else => return e,
                 };
                 try writeFileAbsolute(binding.snippetPath, content.items);
-                if (backup_path) |p| std.fs.deleteFileAbsolute(p) catch {};
+                if (backup_path) |p| std.Io.Dir.deleteFileAbsolute(app_io.get(), p) catch {};
                 return;
             }
             try writeFileAbsolute(binding.snippetPath, content.items);
@@ -561,27 +570,25 @@ pub fn kdeShortcutOwner(allocator: std.mem.Allocator, hotkey: []const u8) !?Shor
     const key = qtKeyForHotkey(hotkey) orelse return null;
     const key_arg = try std.fmt.allocPrint(allocator, "{d}", .{key});
     defer allocator.free(key_arg);
-    var child = std.process.Child.init(&.{
-        "qdbus6",
-        "org.kde.kglobalaccel",
-        "/kglobalaccel",
-        "org.kde.KGlobalAccel.action",
-        key_arg,
-    }, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return null;
-    const output = child.stdout.?.readToEndAlloc(allocator, 4096) catch {
-        _ = child.wait() catch {};
-        return null;
-    };
-    defer allocator.free(output);
-    const term = child.wait() catch return null;
-    switch (term) {
-        .Exited => |status| if (status != 0) return null,
+    const io = app_io.get();
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{
+            "qdbus6",
+            "org.kde.kglobalaccel",
+            "/kglobalaccel",
+            "org.kde.KGlobalAccel.action",
+            key_arg,
+        },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |status| if (status != 0) return null,
         else => return null,
     }
-    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, output, " \t\r\n"), '\n');
+    var lines = std.mem.splitScalar(u8, std.mem.trim(u8, result.stdout, " \t\r\n"), '\n');
     const component = std.mem.trim(u8, lines.next() orelse return null, "\r");
     const action = std.mem.trim(u8, lines.next() orelse return null, "\r");
     const name = std.mem.trim(u8, lines.next() orelse return null, "\r");
@@ -595,7 +602,7 @@ pub fn kdeShortcutOwner(allocator: std.mem.Allocator, hotkey: []const u8) !?Shor
 }
 
 pub fn setKdeShortcutsBlocked(allocator: std.mem.Allocator, blocked: bool) !void {
-    var env = try std.process.getEnvMap(allocator);
+    var env = try app_io.processEnvMap(allocator);
     defer env.deinit();
     try runCommand(allocator, &env, &.{
         "qdbus6",
@@ -607,7 +614,7 @@ pub fn setKdeShortcutsBlocked(allocator: std.mem.Allocator, blocked: bool) !void
 }
 
 pub fn reload(allocator: std.mem.Allocator, kind: Reload) !void {
-    var env = try std.process.getEnvMap(allocator);
+    var env = try app_io.processEnvMap(allocator);
     defer env.deinit();
     try reloadWithEnv(allocator, kind, &env);
 }
@@ -615,7 +622,7 @@ pub fn reload(allocator: std.mem.Allocator, kind: Reload) !void {
 pub fn reloadWithEnv(
     allocator: std.mem.Allocator,
     kind: Reload,
-    env: *std.process.EnvMap,
+    env: *std.process.Environ.Map,
 ) !void {
     switch (kind) {
         .none => return,
@@ -631,13 +638,13 @@ pub fn reloadWithEnv(
 
 fn runCommand(
     allocator: std.mem.Allocator,
-    env: *std.process.EnvMap,
+    env: *std.process.Environ.Map,
     argv: []const []const u8,
 ) !void {
     // Resolve argv[0] against the PATH of the injected env_map: std.process.Child
     // searches the parent process's PATH, not env_map's, so the injected PATH
     // would otherwise be ignored.
-    var resolved_argv = try std.ArrayList([]const u8).initCapacity(allocator, argv.len);
+    var resolved_argv = try std.array_list.Managed([]const u8).initCapacity(allocator, argv.len);
     defer resolved_argv.deinit();
     try resolved_argv.appendSlice(argv);
     if (std.mem.indexOfScalar(u8, argv[0], '/') == null) {
@@ -653,14 +660,14 @@ fn runCommand(
 
 fn resolveOnPath(
     allocator: std.mem.Allocator,
-    env: *std.process.EnvMap,
+    env: *std.process.Environ.Map,
     name: []const u8,
 ) !?[]u8 {
     const path_env = env.get("PATH") orelse return null;
     var it = std.mem.tokenizeScalar(u8, path_env, ':');
     while (it.next()) |dir| {
         const candidate = try std.fs.path.join(allocator, &.{ dir, name });
-        if (std.fs.accessAbsolute(candidate, .{})) |_| {
+        if (std.Io.Dir.accessAbsolute(app_io.get(), candidate, .{})) |_| {
             return candidate;
         } else |_| {
             allocator.free(candidate);
@@ -671,17 +678,23 @@ fn resolveOnPath(
 
 fn spawnAndCheck(
     allocator: std.mem.Allocator,
-    env: *std.process.EnvMap,
+    env: *std.process.Environ.Map,
     argv: []const []const u8,
 ) !void {
-    var child = std.process.Child.init(argv, allocator);
-    child.env_map = env;
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Pipe;
-    const term = try child.spawnAndWait();
+    _ = allocator;
+    const io = app_io.get();
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .environ_map = env,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .pipe,
+    });
+    if (child.stderr) |err_f| err_f.close(io);
+    child.stderr = null;
+    const term = try child.wait(io);
     switch (term) {
-        .Exited => |code| if (code != 0) return error.ReloadFailed,
+        .exited => |code| if (code != 0) return error.ReloadFailed,
         else => return error.ReloadFailed,
     }
 }

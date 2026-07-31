@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 
 pub const Theme = enum { dark, light };
 pub const MarqueePosition = enum { top_right, top_left, bottom_right, bottom_left };
@@ -35,10 +36,11 @@ pub const Config = struct {
     /// Absolute path to ~/.config/zigit/config.toml (or $XDG_CONFIG_HOME).
     /// Caller owns the returned slice.
     pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
-        if (std.posix.getenv("XDG_CONFIG_HOME")) |xdg| {
+        if (std.c.getenv("XDG_CONFIG_HOME")) |xdg_z| {
+            const xdg = std.mem.span(xdg_z);
             return std.fs.path.join(allocator, &.{ xdg, "zigit", "config.toml" });
         }
-        const home = std.posix.getenv("HOME") orelse return error.NoHome;
+        const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.NoHome;
         return std.fs.path.join(allocator, &.{ home, ".config", "zigit", "config.toml" });
     }
 
@@ -51,9 +53,8 @@ pub const Config = struct {
         c.hotkey = try allocator.dupe(u8, c.hotkey);
         errdefer allocator.free(c.hotkey);
         errdefer if (c.save_dir.len > 0) allocator.free(c.save_dir);
-        const file = std.fs.openFileAbsolute(path, .{}) catch return c;
-        defer file.close();
-        const content = try file.readToEndAlloc(allocator, 1 << 16);
+        const io = app_io.get();
+        const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 16)) catch return c;
         defer allocator.free(content);
         // Minimal TOML: parse one key = "value" (or bare number) per line.
         var lines = std.mem.splitScalar(u8, content, '\n');
@@ -92,8 +93,7 @@ pub const Config = struct {
         try ensureDirAbsolute(dir);
 
         var buf: [2048]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        const w = fbs.writer();
+        var w: std.Io.Writer = .fixed(&buf);
         try w.writeAll("# ZigIt preferences — edit here or via the Settings tab in the daemon.\n");
         try w.print("save_dir = \"{s}\"\n", .{self.save_dir});
         try w.print("hotkey = \"{s}\"\n", .{self.hotkey});
@@ -105,16 +105,17 @@ pub const Config = struct {
             self.default_color_rgba[2],
         });
         try w.print("font_size = {d}\n", .{self.default_font_size});
-        const content = fbs.getWritten();
+        const content = w.buffered();
 
-        var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const io = app_io.get();
+        var tmp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const tmp = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
         {
-            const f = try std.fs.createFileAbsolute(tmp, .{ .truncate = true });
-            defer f.close();
-            try f.writeAll(content);
+            const f = try std.Io.Dir.createFileAbsolute(io, tmp, .{ .truncate = true });
+            defer f.close(io);
+            try f.writeStreamingAll(io, content);
         }
-        try std.fs.renameAbsolute(tmp, path);
+        try std.Io.Dir.renameAbsolute(tmp, path, io);
     }
 };
 
@@ -165,13 +166,13 @@ pub fn parseHexColor(s: []const u8) ?[4]u8 {
 
 /// Creates `path` and any missing parents (absolute paths only).
 fn ensureDirAbsolute(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |e| switch (e) {
+    std.Io.Dir.createDirAbsolute(app_io.get(), path, .default_dir) catch |e| switch (e) {
         error.PathAlreadyExists => return,
         error.FileNotFound => {
             if (std.fs.path.dirname(path)) |parent| {
                 if (parent.len > 0 and !std.mem.eql(u8, parent, path)) {
                     try ensureDirAbsolute(parent);
-                    try std.fs.makeDirAbsolute(path);
+                    try std.Io.Dir.createDirAbsolute(app_io.get(), path, .default_dir);
                     return;
                 }
             }

@@ -40,7 +40,7 @@ const ListCtx = struct {
     /// One heap entry per toplevel handle. Heap-allocated so ArrayList growth
     /// when the manager announces more toplevels never moves an entry a
     /// handle listener already points at.
-    states: std.ArrayList(*HandleState),
+    states: std.array_list.Managed(*HandleState),
     manager: ?*wl.zwlr_foreign_toplevel_manager_v1 = null,
     manager_global: ?struct { name: u32, version: u32 } = null,
 };
@@ -78,7 +78,7 @@ pub fn toplevels(allocator: std.mem.Allocator) ![]Toplevel {
     defer wl.wl_display_disconnect(display);
     const registry = wl.wl_display_get_registry(display) orelse return error.NoRegistry;
 
-    var ctx: ListCtx = .{ .allocator = allocator, .states = std.ArrayList(*HandleState).init(allocator) };
+    var ctx: ListCtx = .{ .allocator = allocator, .states = std.array_list.Managed(*HandleState).init(allocator) };
     defer {
         for (ctx.states.items) |s| {
             s.deinitTemp(allocator);
@@ -144,7 +144,7 @@ fn ctxFrom(data: ?*anyopaque) *ListCtx {
     return @ptrCast(@alignCast(data.?));
 }
 
-fn onRegistryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, interface: ?[*:0]const u8, version: u32) callconv(.C) void {
+fn onRegistryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, interface: ?[*:0]const u8, version: u32) callconv(.c) void {
     _ = registry;
     const ctx = ctxFrom(data);
     const iface = std.mem.span(interface orelse return);
@@ -153,13 +153,13 @@ fn onRegistryGlobal(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32, in
     }
 }
 
-fn onRegistryGlobalRemove(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32) callconv(.C) void {
+fn onRegistryGlobalRemove(data: ?*anyopaque, registry: ?*wl.wl_registry, name: u32) callconv(.c) void {
     _ = data;
     _ = registry;
     _ = name;
 }
 
-fn onManagerToplevel(data: ?*anyopaque, manager: ?*wl.zwlr_foreign_toplevel_manager_v1, handle: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.C) void {
+fn onManagerToplevel(data: ?*anyopaque, manager: ?*wl.zwlr_foreign_toplevel_manager_v1, handle: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.c) void {
     _ = manager;
     const ctx = ctxFrom(data);
     const h = handle orelse return;
@@ -172,7 +172,7 @@ fn onManagerToplevel(data: ?*anyopaque, manager: ?*wl.zwlr_foreign_toplevel_mana
     };
 }
 
-fn onManagerFinished(data: ?*anyopaque, manager: ?*wl.zwlr_foreign_toplevel_manager_v1) callconv(.C) void {
+fn onManagerFinished(data: ?*anyopaque, manager: ?*wl.zwlr_foreign_toplevel_manager_v1) callconv(.c) void {
     _ = data;
     _ = manager;
 }
@@ -187,47 +187,47 @@ fn dupeReplace(allocator: std.mem.Allocator, slot: *?[]u8, value: ?[*:0]const u8
     slot.* = allocator.dupe(u8, std.mem.span(v)) catch null;
 }
 
-fn onHandleTitle(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, title: ?[*:0]const u8) callconv(.C) void {
+fn onHandleTitle(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, title: ?[*:0]const u8) callconv(.c) void {
     _ = handle;
     const s = stateFrom(data);
     dupeReplace(s.allocator, &s.title, title);
 }
 
-fn onHandleAppId(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, app_id: ?[*:0]const u8) callconv(.C) void {
+fn onHandleAppId(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, app_id: ?[*:0]const u8) callconv(.c) void {
     _ = handle;
     const s = stateFrom(data);
     dupeReplace(s.allocator, &s.app_id, app_id);
 }
 
-fn onHandleOutputEnter(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, output: ?*wl.wl_output) callconv(.C) void {
+fn onHandleOutputEnter(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, output: ?*wl.wl_output) callconv(.c) void {
     _ = data;
     _ = handle;
     _ = output;
 }
 
-fn onHandleOutputLeave(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, output: ?*wl.wl_output) callconv(.C) void {
+fn onHandleOutputLeave(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, output: ?*wl.wl_output) callconv(.c) void {
     _ = data;
     _ = handle;
     _ = output;
 }
 
-fn onHandleState(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, state: ?*wl.wl_array) callconv(.C) void {
+fn onHandleState(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, state: ?*wl.wl_array) callconv(.c) void {
     _ = data;
     _ = handle;
     _ = state;
 }
 
-fn onHandleDone(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.C) void {
+fn onHandleDone(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.c) void {
     _ = data;
     _ = handle;
 }
 
-fn onHandleClosed(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.C) void {
+fn onHandleClosed(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.c) void {
     _ = data;
     _ = handle;
 }
 
-fn onHandleParent(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, parent: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.C) void {
+fn onHandleParent(data: ?*anyopaque, handle: ?*wl.zwlr_foreign_toplevel_handle_v1, parent: ?*wl.zwlr_foreign_toplevel_handle_v1) callconv(.c) void {
     _ = data;
     _ = handle;
     _ = parent;

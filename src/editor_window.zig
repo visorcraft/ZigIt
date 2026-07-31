@@ -1,4 +1,6 @@
 const std = @import("std");
+const app_io = @import("app_io");
+const app_icon = @import("app_icon");
 const c = @cImport({
     @cInclude("GLFW/glfw3.h");
     @cInclude("GLES2/gl2.h");
@@ -45,7 +47,7 @@ fn uploadTexture(rgba: []const u8, w: u32, h: u32) c_uint {
 
 pub const EditorWindow = struct {
     pub fn run(allocator: std.mem.Allocator, path: []const u8) !void {
-        const bytes = try std.fs.cwd().readFileAlloc(allocator, path, 32 * 1024 * 1024);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), path, allocator, .limited(32 * 1024 * 1024));
         defer allocator.free(bytes);
         var w: u32 = 0;
         var h: u32 = 0;
@@ -81,16 +83,19 @@ pub const EditorWindow = struct {
         }
 
         // Window sized to the image + chrome, capped at 1400x900.
+        app_icon.installUserChrome(allocator);
         if (c.glfwInit() == 0) return error.GlfwInitFailed;
         defer c.glfwTerminate();
         c.glfwWindowHint(c.GLFW_CLIENT_API, c.GLFW_OPENGL_ES_API);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 0);
+        app_icon.applyWindowHints(c);
         const win_w: c_int = @intCast(@min(w + 120, 1400));
         const win_h: c_int = @intCast(@min(h + 100, 900));
         const win = c.glfwCreateWindow(win_w, win_h, "ZigIt Editor", null, null);
         if (win == null) return error.WindowFailed;
         defer c.glfwDestroyWindow(win);
+        app_icon.setWindowIcon(c, win);
         c.glfwMakeContextCurrent(win);
         c.glfwSwapInterval(1);
 

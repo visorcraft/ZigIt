@@ -83,7 +83,7 @@ pub const Connection = struct {
     fn ensureEnumCtx(self: *Connection, allocator: std.mem.Allocator) !*EnumCtx {
         if (self.enum_ctx) |ctx| return ctx;
         const ctx = try allocator.create(EnumCtx);
-        ctx.* = .{ .allocator = allocator, .pending = std.ArrayList(*PendingOutput).init(allocator) };
+        ctx.* = .{ .allocator = allocator, .pending = std.array_list.Managed(*PendingOutput).init(allocator) };
         if (wayland.wl_registry_add_listener(self.registry, &reg_listener, ctx) < 0) {
             ctx.pending.deinit();
             allocator.destroy(ctx);
@@ -172,7 +172,7 @@ const EnumCtx = struct {
     /// One heap entry per advertised wl_output. Heap-allocated so ArrayList
     /// growth on later registry events never moves an entry a wl_output
     /// listener still points at.
-    pending: std.ArrayList(*PendingOutput),
+    pending: std.array_list.Managed(*PendingOutput),
     shm: ?*wayland.wl_shm = null,
     screencopy: ?Global = null,
 
@@ -200,7 +200,7 @@ const out_listener = wayland.wl_output_listener{
     .scale = onOutputScale,
 };
 
-fn onRegistryGlobal(data: ?*anyopaque, registry: ?*wayland.wl_registry, name: u32, interface: ?[*:0]const u8, version: u32) callconv(.C) void {
+fn onRegistryGlobal(data: ?*anyopaque, registry: ?*wayland.wl_registry, name: u32, interface: ?[*:0]const u8, version: u32) callconv(.c) void {
     const ctx: *EnumCtx = @ptrCast(@alignCast(data orelse return));
     const iface = std.mem.span(interface orelse return);
     if (std.mem.eql(u8, iface, "wl_output")) {
@@ -227,19 +227,19 @@ fn onRegistryGlobal(data: ?*anyopaque, registry: ?*wayland.wl_registry, name: u3
     }
 }
 
-fn onRegistryGlobalRemove(data: ?*anyopaque, registry: ?*wayland.wl_registry, name: u32) callconv(.C) void {
+fn onRegistryGlobalRemove(data: ?*anyopaque, registry: ?*wayland.wl_registry, name: u32) callconv(.c) void {
     _ = data;
     _ = registry;
     _ = name;
 }
 
-fn onShmFormat(data: ?*anyopaque, shm: ?*wayland.wl_shm, format: u32) callconv(.C) void {
+fn onShmFormat(data: ?*anyopaque, shm: ?*wayland.wl_shm, format: u32) callconv(.c) void {
     _ = data;
     _ = shm;
     _ = format;
 }
 
-fn onOutputGeometry(data: ?*anyopaque, output: ?*wayland.wl_output, x: i32, y: i32, physical_width: i32, physical_height: i32, subpixel: i32, make: ?[*:0]const u8, model: ?[*:0]const u8, transform: i32) callconv(.C) void {
+fn onOutputGeometry(data: ?*anyopaque, output: ?*wayland.wl_output, x: i32, y: i32, physical_width: i32, physical_height: i32, subpixel: i32, make: ?[*:0]const u8, model: ?[*:0]const u8, transform: i32) callconv(.c) void {
     _ = output;
     _ = x;
     _ = y;
@@ -259,7 +259,7 @@ fn onOutputGeometry(data: ?*anyopaque, output: ?*wayland.wl_output, x: i32, y: i
     }
 }
 
-fn onOutputMode(data: ?*anyopaque, output: ?*wayland.wl_output, flags: u32, width: i32, height: i32, refresh: i32) callconv(.C) void {
+fn onOutputMode(data: ?*anyopaque, output: ?*wayland.wl_output, flags: u32, width: i32, height: i32, refresh: i32) callconv(.c) void {
     _ = output;
     _ = refresh;
     const state: *OutputState = @ptrCast(@alignCast(data orelse return));
@@ -270,12 +270,12 @@ fn onOutputMode(data: ?*anyopaque, output: ?*wayland.wl_output, flags: u32, widt
     }
 }
 
-fn onOutputDone(data: ?*anyopaque, output: ?*wayland.wl_output) callconv(.C) void {
+fn onOutputDone(data: ?*anyopaque, output: ?*wayland.wl_output) callconv(.c) void {
     _ = data;
     _ = output;
 }
 
-fn onOutputScale(data: ?*anyopaque, output: ?*wayland.wl_output, factor: i32) callconv(.C) void {
+fn onOutputScale(data: ?*anyopaque, output: ?*wayland.wl_output, factor: i32) callconv(.c) void {
     _ = output;
     const state: *OutputState = @ptrCast(@alignCast(data orelse return));
     state.out.scale = factor;

@@ -1,58 +1,92 @@
 const std = @import("std");
 
-// stb_image_write's implementation translates cleanly under Zig 0.13's
-// translate-c. stb_image's does not (its vertical-flip and Adam7 paths use
-// pointer compound-assignments that translate-c 0.13 miscompiles), so the
-// decode path below is a minimal PNG reader in pure Zig: 8-bit
-// RGBA (color type 6), non-interlaced, all five scanline filters.
-const c = @cImport({
-    @cDefine("STB_IMAGE_WRITE_IMPLEMENTATION", "1");
-    // Keep everything static: otherwise the header's extern declarations of the
-    // tunable globals (stbi_write_png_compression_level etc.) shadow their
-    // definitions and translate-c leaves them as undefined extern symbols.
-    @cDefine("STB_IMAGE_WRITE_STATIC", "1");
-    @cInclude("stdlib.h");
-    @cInclude("string.h");
-    @cInclude("stb_image_write.h");
-});
-
-const WriteCtx = extern struct {
-    buf: [*]u8,
-    offset: usize,
-    capacity: usize,
-};
-
-fn writeCb(ctx: ?*anyopaque, data: ?*anyopaque, size: c_int) callconv(.C) void {
-    const wc: *WriteCtx = @ptrCast(@alignCast(ctx orelse return));
-    const src: [*]const u8 = @ptrCast(data orelse return);
-    const n: usize = @intCast(size);
-    if (wc.offset + n > wc.capacity) return;
-    @memcpy(wc.buf[wc.offset..][0..n], src[0..n]);
-    wc.offset += n;
+fn crc32(data: []const u8) u32 {
+    return std.hash.crc.Crc32.hash(data);
 }
 
+fn adler32(data: []const u8) u32 {
+    var s1: u32 = 1;
+    var s2: u32 = 0;
+    for (data) |b| {
+        s1 = (s1 + b) % 65521;
+        s2 = (s2 + s1) % 65521;
+    }
+    return (s2 << 16) | s1;
+}
+
+fn writeBe32(list: *std.array_list.Managed(u8), v: u32) !void {
+    var buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &buf, v, .big);
+    try list.appendSlice(&buf);
+}
+
+fn writeChunk(list: *std.array_list.Managed(u8), tag: *const [4]u8, payload: []const u8) !void {
+    try writeBe32(list, @intCast(payload.len));
+    const start = list.items.len;
+    try list.appendSlice(tag);
+    try list.appendSlice(payload);
+    // CRC over type + payload
+    const crc = crc32(list.items[start..]);
+    try writeBe32(list, crc);
+}
+
+/// Encode 8-bit RGBA into a non-interlaced PNG (filter None, zlib stored blocks).
 pub fn encode(allocator: std.mem.Allocator, rgba: []const u8, w: u32, h: u32) ![]u8 {
-    // PNG worst case: filter byte per row + raw bytes + zlib overhead (~1.1x),
-    // plus fixed container overhead (sig, IHDR, IDAT/IEND headers, CRCs) that
-    // dominates for tiny images.
     const width: usize = w;
     const height: usize = h;
-    const upper = (width * height * 4 + height) * 2 + 128;
-    const out = try allocator.alloc(u8, upper);
-    defer allocator.free(out);
-    var wc = WriteCtx{ .buf = out.ptr, .offset = 0, .capacity = upper };
-    const ok = c.stbi_write_png_to_func(
-        writeCb,
-        &wc,
-        @intCast(width),
-        @intCast(height),
-        4,
-        rgba.ptr,
-        @intCast(width * 4),
-    );
-    if (ok == 0) return error.EncodeFailed;
-    // Shrink to the exact encoded size so the caller can free the slice directly.
-    return try allocator.dupe(u8, out[0..wc.offset]);
+    if (rgba.len < width * height * 4) return error.EncodeFailed;
+
+    // Raw image with filter byte 0 per scanline.
+    const rowbytes = width * 4;
+    const raw_len = height * (rowbytes + 1);
+    const raw = try allocator.alloc(u8, raw_len);
+    defer allocator.free(raw);
+    for (0..height) |y| {
+        raw[y * (rowbytes + 1)] = 0; // filter None
+        @memcpy(raw[y * (rowbytes + 1) + 1 ..][0..rowbytes], rgba[y * rowbytes ..][0..rowbytes]);
+    }
+
+    // zlib stream: CMF/FLG + stored deflate blocks + adler32.
+    var zlib_buf: std.array_list.Managed(u8) = .init(allocator);
+    defer zlib_buf.deinit();
+    // CMF=8 (deflate), CINFO=7 (32K); FLG makes CMF*256+FLG divisible by 31, FLEVEL=0.
+    try zlib_buf.appendSlice(&.{ 0x78, 0x01 });
+
+    var pos: usize = 0;
+    while (pos < raw.len) {
+        const remaining = raw.len - pos;
+        const chunk_len: u16 = @intCast(@min(remaining, 65535));
+        const is_final = pos + chunk_len >= raw.len;
+        // BFINAL + BTYPE=00 (stored)
+        try zlib_buf.append(if (is_final) 0x01 else 0x00);
+        var len_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &len_bytes, chunk_len, .little);
+        try zlib_buf.appendSlice(&len_bytes);
+        var nlen_bytes: [2]u8 = undefined;
+        std.mem.writeInt(u16, &nlen_bytes, ~chunk_len, .little);
+        try zlib_buf.appendSlice(&nlen_bytes);
+        try zlib_buf.appendSlice(raw[pos .. pos + chunk_len]);
+        pos += chunk_len;
+    }
+    try writeBe32(&zlib_buf, adler32(raw));
+
+    var out: std.array_list.Managed(u8) = .init(allocator);
+    errdefer out.deinit();
+    try out.appendSlice("\x89PNG\r\n\x1a\n");
+
+    var ihdr: [13]u8 = undefined;
+    std.mem.writeInt(u32, ihdr[0..4], w, .big);
+    std.mem.writeInt(u32, ihdr[4..8], h, .big);
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 6; // RGBA
+    ihdr[10] = 0; // compression
+    ihdr[11] = 0; // filter
+    ihdr[12] = 0; // interlace
+    try writeChunk(&out, "IHDR", &ihdr);
+    try writeChunk(&out, "IDAT", zlib_buf.items);
+    try writeChunk(&out, "IEND", &.{});
+
+    return try out.toOwnedSlice();
 }
 
 fn paeth(a: u8, b: u8, cc: u8) u8 {
@@ -78,7 +112,7 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, out_w: *u32, out_
     var w: u32 = 0;
     var h: u32 = 0;
     var saw_ihdr = false;
-    var idat = std.ArrayList(u8).init(allocator);
+    var idat: std.array_list.Managed(u8) = .init(allocator);
     defer idat.deinit();
 
     var pos: usize = 8;
@@ -109,9 +143,11 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, out_w: *u32, out_
     const rowbytes = width * 4;
     const raw = try allocator.alloc(u8, height * (rowbytes + 1));
     defer allocator.free(raw);
-    var stream = std.io.fixedBufferStream(idat.items);
-    var decomp = std.compress.zlib.decompressor(stream.reader());
-    decomp.reader().readNoEof(raw) catch return error.DecodeFailed;
+
+    var input: std.Io.Reader = .fixed(idat.items);
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var decomp: std.compress.flate.Decompress = .init(&input, .zlib, &window);
+    decomp.reader.readSliceAll(raw) catch return error.DecodeFailed;
 
     const out = try allocator.alloc(u8, width * height * 4);
     errdefer allocator.free(out);

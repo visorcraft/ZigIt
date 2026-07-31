@@ -7,12 +7,13 @@ pub fn build(b: *std.Build) void {
     // cimgui + Dear ImGui (vendored C++ compiled as a static library; cimgui is the
     // C-friendly shim that @cImport can ingest. imgui.h itself is C++ and Zig's
     // @cImport cannot parse it.)
-    const imgui = b.addStaticLibrary(.{
-        .name = "imgui",
+    const imgui_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
     });
-    imgui.addCSourceFiles(.{
+    imgui_mod.addCSourceFiles(.{
         .files = &.{
             "vendor/imgui/imgui.cpp",
             "vendor/imgui/imgui_demo.cpp",
@@ -29,180 +30,303 @@ pub fn build(b: *std.Build) void {
             "-DIMGUI_IMPL_OPENGL_ES3",
         },
     });
-    imgui.addIncludePath(b.path("vendor/imgui"));
-    imgui.addIncludePath(b.path("vendor/imgui/backends"));
-    imgui.addIncludePath(b.path("vendor/imgui/cimgui"));
-    imgui.linkLibC();
-    imgui.linkLibCpp();
+    imgui_mod.addIncludePath(b.path("vendor/imgui"));
+    imgui_mod.addIncludePath(b.path("vendor/imgui/backends"));
+    imgui_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
+    const imgui = b.addLibrary(.{
+        .name = "imgui",
+        .linkage = .static,
+        .root_module = imgui_mod,
+    });
     b.installArtifact(imgui);
 
     // Generated wlr-screencopy protocol glue (checked in under vendor/).
-    const wl_proto = b.addStaticLibrary(.{
-        .name = "wl_proto",
+    const wl_proto_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
-    wl_proto.addCSourceFile(.{
+    wl_proto_mod.addCSourceFile(.{
         .file = b.path("vendor/wl_proto_screencopy.c"),
         .flags = &.{},
     });
-    wl_proto.addCSourceFile(.{
+    wl_proto_mod.addCSourceFile(.{
         .file = b.path("vendor/wl_proto_layer_shell.c"),
         .flags = &.{},
     });
-    wl_proto.addCSourceFile(.{
+    wl_proto_mod.addCSourceFile(.{
         .file = b.path("vendor/wl_proto_toplevel.c"),
         .flags = &.{},
     });
-    wl_proto.addIncludePath(b.path("vendor"));
-    wl_proto.linkLibC();
-    wl_proto.linkSystemLibrary("wayland-client");
+    wl_proto_mod.addIncludePath(b.path("vendor"));
+    // Do not link wayland-client on this static lib: Zig would embed the .so
+    // path into the archive and LLD fails under ReleaseSafe. The final
+    // executable links wayland-client instead.
+    const wl_proto = b.addLibrary(.{
+        .name = "wl_proto",
+        .linkage = .static,
+        .root_module = wl_proto_mod,
+    });
     b.installArtifact(wl_proto);
 
-    // ZigIt binary
-    const exe = b.addExecutable(.{
-        .name = "zigit",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    exe.linkLibrary(imgui);
-    exe.linkLibrary(wl_proto);
-    exe.addIncludePath(b.path("vendor"));
-    exe.linkLibC();
-    exe.linkLibCpp();
-    exe.linkSystemLibrary("glfw3");
-    exe.linkSystemLibrary("wayland-client");
-    exe.linkSystemLibrary("wayland-cursor");
-    exe.linkSystemLibrary("wayland-egl");
-    exe.linkSystemLibrary("egl");
-    exe.linkSystemLibrary("glesv2");
-    exe.linkSystemLibrary("xkbcommon");
-    // inotify is in glibc; no link needed.
-    b.installArtifact(exe);
-
-    // Src files are exposed as named modules: Zig 0.13 forbids file imports
-    // outside a module's root directory, so tests cannot reach "../src/x.zig"
-    // directly, and sibling src files cross-import by module name
-    // (`@import("png")` etc.) so include paths stay attached to one instance.
+    // Shared modules. Zig forbids file imports outside a module's root, so
+    // tests and sibling sources cross-import by module name.
     const mod_names = [_][]const u8{
-        "config", "watcher", "compositor", "clipboard", "wayland", "log",
+        "app_io", "config", "watcher", "compositor", "clipboard", "wayland", "log",
     };
     var mods: [mod_names.len]*std.Build.Module = undefined;
     inline for (mod_names, 0..) |name, i| {
-        mods[i] = b.addModule(name, .{ .root_source_file = b.path("src/" ++ name ++ ".zig") });
+        mods[i] = b.addModule(name, .{
+            .root_source_file = b.path(b.fmt("src/{s}.zig", .{name})),
+            .target = target,
+            .optimize = optimize,
+        });
     }
-    // Shared ImGui chrome (daemon + editor). @cImports cimgui.
-    const theme_mod = b.addModule("theme", .{ .root_source_file = b.path("src/theme.zig") });
+    // app_io is index 0; wire it into modules that perform process I/O.
+    const app_io_mod = mods[0];
+
+    const app_icon_mod = b.addModule("app_icon", .{
+        .root_source_file = b.path("src/app_icon.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    app_icon_mod.addImport("app_io", app_io_mod);
+
+    const theme_mod = b.addModule("theme", .{
+        .root_source_file = b.path("src/theme.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     theme_mod.addIncludePath(b.path("vendor/imgui"));
     theme_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
-    theme_mod.addImport("config", mods[0]);
-    const storage_mod = b.addModule("storage", .{ .root_source_file = b.path("src/storage.zig") });
-    // png @cImports the vendored stb headers, so its include path must be
-    // attached to the module itself (artifact-level -I does not reach
-    // dependency-module cImports in 0.13).
-    const png_mod = b.addModule("png", .{ .root_source_file = b.path("src/png.zig") });
+    theme_mod.addImport("config", mods[1]);
+    theme_mod.addImport("app_io", app_io_mod);
+
+    const storage_mod = b.addModule("storage", .{
+        .root_source_file = b.path("src/storage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    storage_mod.addImport("app_io", app_io_mod);
+
+    const png_mod = b.addModule("png", .{
+        .root_source_file = b.path("src/png.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     png_mod.addIncludePath(b.path("vendor/imgui"));
-    const capture_mod = b.addModule("capture", .{ .root_source_file = b.path("src/capture.zig") });
+
+    const capture_mod = b.addModule("capture", .{
+        .root_source_file = b.path("src/capture.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     capture_mod.addImport("png", png_mod);
-    const editor_mod = b.addModule("editor", .{ .root_source_file = b.path("src/editor.zig") });
+
+    const editor_mod = b.addModule("editor", .{
+        .root_source_file = b.path("src/editor.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     editor_mod.addImport("png", png_mod);
     editor_mod.addImport("storage", storage_mod);
-    const marquee_mod = b.addModule("marquee", .{ .root_source_file = b.path("src/marquee.zig") });
-    // marquee @cImports cimgui, so the vendored include paths must be attached
-    // to the module itself. mods[] follows mod_names order: watcher is index 1.
+    editor_mod.addImport("app_io", app_io_mod);
+
+    const marquee_mod = b.addModule("marquee", .{
+        .root_source_file = b.path("src/marquee.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     marquee_mod.addIncludePath(b.path("vendor/imgui"));
     marquee_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
-    marquee_mod.addImport("watcher", mods[1]);
+    marquee_mod.addImport("watcher", mods[2]);
     marquee_mod.addImport("png", png_mod);
-    const layer_shell_mod = b.addModule("layer_shell", .{ .root_source_file = b.path("src/layer_shell.zig") });
-    const toast_mod = b.addModule("toast", .{ .root_source_file = b.path("src/toast.zig") });
-    // toast @cImports cimgui, so the vendored include paths must be attached
-    // to the module itself.
+    marquee_mod.addImport("app_io", app_io_mod);
+
+    const layer_shell_mod = b.addModule("layer_shell", .{
+        .root_source_file = b.path("src/layer_shell.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const toast_mod = b.addModule("toast", .{
+        .root_source_file = b.path("src/toast.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     toast_mod.addIncludePath(b.path("vendor/imgui"));
     toast_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
-    const overlay_mod = b.addModule("overlay", .{ .root_source_file = b.path("src/overlay.zig") });
-    // mods[] follows mod_names order: config is 0, clipboard is 3, wayland is 4.
-    overlay_mod.addImport("capture", capture_mod);
-    overlay_mod.addImport("storage", storage_mod);
-    overlay_mod.addImport("clipboard", mods[3]);
-    overlay_mod.addImport("wayland", mods[4]);
-    overlay_mod.addImport("config", mods[0]);
-    const spawn_mod = b.addModule("spawn", .{ .root_source_file = b.path("src/spawn.zig") });
-    const toplevel_mod = b.addModule("toplevel", .{ .root_source_file = b.path("src/toplevel.zig") });
-    // toplevel @cImports the vendored foreign-toplevel header, so the include
-    // path must be attached to the module itself.
+    toast_mod.addImport("app_io", app_io_mod);
+
+    const spawn_mod = b.addModule("spawn", .{
+        .root_source_file = b.path("src/spawn.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    spawn_mod.addImport("app_io", app_io_mod);
+
+    const toplevel_mod = b.addModule("toplevel", .{
+        .root_source_file = b.path("src/toplevel.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     toplevel_mod.addIncludePath(b.path("vendor"));
     toplevel_mod.addImport("capture", capture_mod);
+
+    const clipboard_mod = mods[4];
+    clipboard_mod.addImport("app_io", app_io_mod);
+
+    const compositor_mod = mods[3];
+    compositor_mod.addImport("app_io", app_io_mod);
+
+    const config_mod = mods[1];
+    config_mod.addImport("app_io", app_io_mod);
+
+    const log_mod = mods[6];
+    log_mod.addImport("app_io", app_io_mod);
+
+    const overlay_mod = b.addModule("overlay", .{
+        .root_source_file = b.path("src/overlay.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    overlay_mod.addImport("capture", capture_mod);
+    overlay_mod.addImport("storage", storage_mod);
+    overlay_mod.addImport("clipboard", clipboard_mod);
+    overlay_mod.addImport("wayland", mods[5]);
+    overlay_mod.addImport("config", config_mod);
     overlay_mod.addImport("spawn", spawn_mod);
     overlay_mod.addImport("toplevel", toplevel_mod);
-    exe.root_module.addImport("overlay", overlay_mod);
-    const setup_mod = b.addModule("setup", .{ .root_source_file = b.path("src/setup.zig") });
-    // mods[] follows mod_names order: config is index 0, compositor index 2.
-    setup_mod.addImport("config", mods[0]);
-    setup_mod.addImport("compositor", mods[2]);
-    exe.root_module.addImport("setup", setup_mod);
-    const editor_window_mod = b.addModule("editor_window", .{ .root_source_file = b.path("src/editor_window.zig") });
-    // editor_window @cImports cimgui + the backend shims, so the vendored
-    // include paths must be attached to the module itself.
+    overlay_mod.addImport("app_io", app_io_mod);
+
+    const setup_mod = b.addModule("setup", .{
+        .root_source_file = b.path("src/setup.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    setup_mod.addImport("config", config_mod);
+    setup_mod.addImport("compositor", compositor_mod);
+    setup_mod.addImport("app_io", app_io_mod);
+    setup_mod.addImport("app_icon", app_icon_mod);
+
+    const editor_window_mod = b.addModule("editor_window", .{
+        .root_source_file = b.path("src/editor_window.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     editor_window_mod.addIncludePath(b.path("vendor/imgui"));
     editor_window_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
     editor_window_mod.addImport("png", png_mod);
     editor_window_mod.addImport("editor", editor_mod);
     editor_window_mod.addImport("theme", theme_mod);
-    editor_window_mod.addImport("config", mods[0]);
-    exe.root_module.addImport("editor_window", editor_window_mod);
-    const ui_mod = b.addModule("ui", .{ .root_source_file = b.path("src/ui.zig") });
-    // ui @cImports cimgui + the backend shims, so the vendored include paths
-    // must be attached to the module itself (artifact-level -I does not reach
-    // dependency-module cImports in 0.13).
+    editor_window_mod.addImport("config", config_mod);
+    editor_window_mod.addImport("app_io", app_io_mod);
+    editor_window_mod.addImport("app_icon", app_icon_mod);
+
+    const ui_mod = b.addModule("ui", .{
+        .root_source_file = b.path("src/ui.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     ui_mod.addIncludePath(b.path("vendor/imgui"));
     ui_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
     ui_mod.addImport("marquee", marquee_mod);
     ui_mod.addImport("storage", storage_mod);
     ui_mod.addImport("toast", toast_mod);
-    // mods[] follows mod_names order: compositor is index 2, config is index 0.
-    ui_mod.addImport("compositor", mods[2]);
-    ui_mod.addImport("config", mods[0]);
+    ui_mod.addImport("compositor", compositor_mod);
+    ui_mod.addImport("config", config_mod);
     ui_mod.addImport("theme", theme_mod);
-    exe.root_module.addImport("ui", ui_mod);
+    ui_mod.addImport("app_io", app_io_mod);
+    ui_mod.addImport("app_icon", app_icon_mod);
 
-    // Tests: iterate every tests/*_test.zig
+    const root_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .link_libcpp = true,
+        .imports = &.{
+            .{ .name = "app_io", .module = app_io_mod },
+            .{ .name = "overlay", .module = overlay_mod },
+            .{ .name = "setup", .module = setup_mod },
+            .{ .name = "editor_window", .module = editor_window_mod },
+            .{ .name = "ui", .module = ui_mod },
+        },
+    });
+    root_mod.linkLibrary(imgui);
+    root_mod.linkLibrary(wl_proto);
+    root_mod.addIncludePath(b.path("vendor"));
+    root_mod.linkSystemLibrary("glfw3", .{});
+    root_mod.linkSystemLibrary("wayland-client", .{});
+    root_mod.linkSystemLibrary("wayland-cursor", .{});
+    root_mod.linkSystemLibrary("wayland-egl", .{});
+    root_mod.linkSystemLibrary("egl", .{});
+    root_mod.linkSystemLibrary("glesv2", .{});
+    root_mod.linkSystemLibrary("xkbcommon", .{});
+
+    const exe = b.addExecutable(.{
+        .name = "zigit",
+        .root_module = root_mod,
+    });
+    b.installArtifact(exe);
+
+    // Freedesktop icons + desktop entry for packaging (AUR/system install).
+    const icon_sizes = [_][]const u8{ "16x16", "24x24", "32x32", "48x48", "64x64", "96x96", "128x128", "192x192", "256x256", "512x512" };
+    for (icon_sizes) |size| {
+        const install_icon = b.addInstallFile(
+            b.path(b.fmt("packaging/icons/hicolor/{s}/apps/com.visorcraft.zigit.png", .{size})),
+            b.fmt("share/icons/hicolor/{s}/apps/com.visorcraft.zigit.png", .{size}),
+        );
+        b.getInstallStep().dependOn(&install_icon.step);
+    }
+    const install_desktop = b.addInstallFile(
+        b.path("packaging/com.visorcraft.zigit.desktop"),
+        "share/applications/com.visorcraft.zigit.desktop",
+    );
+    b.getInstallStep().dependOn(&install_desktop.step);
+
     const test_step = b.step("test", "Run unit tests");
     {
-        var dir = std.fs.cwd().openDir("tests", .{ .iterate = true }) catch @panic("cannot open tests dir");
-        defer dir.close();
+        const io = b.graph.io;
+        var dir = std.Io.Dir.cwd().openDir(io, "tests", .{ .iterate = true }) catch @panic("cannot open tests dir");
+        defer dir.close(io);
         var it = dir.iterate();
-        while (it.next() catch @panic("cannot iterate tests dir")) |entry| {
+        while (it.next(io) catch @panic("cannot iterate tests dir")) |entry| {
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.name, "_test.zig")) continue;
-            const t = b.addTest(.{
+
+            const t_mod = b.createModule(.{
                 .root_source_file = b.path(b.fmt("tests/{s}", .{entry.name})),
                 .target = target,
                 .optimize = optimize,
+                .link_libc = true,
             });
             inline for (mod_names, 0..) |name, i| {
-                t.root_module.addImport(name, mods[i]);
+                t_mod.addImport(name, mods[i]);
             }
-            t.root_module.addImport("storage", storage_mod);
-            t.root_module.addImport("png", png_mod);
-            t.root_module.addImport("capture", capture_mod);
-            t.root_module.addImport("editor", editor_mod);
-            t.root_module.addImport("marquee", marquee_mod);
-            t.root_module.addImport("layer_shell", layer_shell_mod);
-            t.root_module.addImport("toast", toast_mod);
-            t.root_module.addImport("overlay", overlay_mod);
-            t.root_module.addImport("spawn", spawn_mod);
-            t.root_module.addImport("toplevel", toplevel_mod);
-            t.root_module.addImport("setup", setup_mod);
-            t.root_module.addImport("editor_window", editor_window_mod);
-            t.root_module.addImport("ui", ui_mod);
-            t.root_module.addImport("theme", theme_mod);
-            t.linkLibC();
-            t.addIncludePath(b.path("vendor/imgui"));
-            t.addIncludePath(b.path("vendor"));
-            t.linkSystemLibrary("wayland-client");
-            t.linkSystemLibrary("glfw3");
+            t_mod.addImport("storage", storage_mod);
+            t_mod.addImport("png", png_mod);
+            t_mod.addImport("capture", capture_mod);
+            t_mod.addImport("editor", editor_mod);
+            t_mod.addImport("marquee", marquee_mod);
+            t_mod.addImport("layer_shell", layer_shell_mod);
+            t_mod.addImport("toast", toast_mod);
+            t_mod.addImport("overlay", overlay_mod);
+            t_mod.addImport("spawn", spawn_mod);
+            t_mod.addImport("toplevel", toplevel_mod);
+            t_mod.addImport("setup", setup_mod);
+            t_mod.addImport("editor_window", editor_window_mod);
+            t_mod.addImport("ui", ui_mod);
+            t_mod.addImport("theme", theme_mod);
+            t_mod.addImport("app_icon", app_icon_mod);
+            t_mod.addIncludePath(b.path("vendor/imgui"));
+            t_mod.addIncludePath(b.path("vendor"));
+            t_mod.linkSystemLibrary("wayland-client", .{});
+            t_mod.linkSystemLibrary("glfw3", .{});
+
+            const t = b.addTest(.{
+                .root_module = t_mod,
+            });
             test_step.dependOn(&b.addRunArtifact(t).step);
         }
     }

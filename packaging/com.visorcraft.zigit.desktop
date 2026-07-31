@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ZigIt
+GenericName=Screenshot Tool
+Comment=Fast screenshots, clipboard handoff, and annotation for Wayland
+Keywords=screenshot;capture;annotate;wayland;
+Exec=zigit daemon
+Icon=com.visorcraft.zigit
+Terminal=false
+StartupWMClass=zigit
+Categories=Utility;Graphics;

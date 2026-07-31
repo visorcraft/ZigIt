@@ -1320,7 +1320,7 @@ static void stbiw__jpg_calcBits(int val, unsigned short bits[2]) {
    val = val < 0 ? val-1 : val;
    bits[1] = 1;
    while(tmp1 >>= 1) {
-      ++bits[1];
+      bits[1] = (unsigned short)(bits[1] + 1);
    }
    bits[0] = val & ((1<<bits[1])-1);
 }

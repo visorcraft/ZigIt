@@ -1,4 +1,5 @@
 const std = @import("std");
+const app_io = @import("app_io");
 const testing = std.testing;
 const cmp = @import("compositor");
 
@@ -24,11 +25,11 @@ fn freeBinding(b: cmp.Binding) void {
 
 test "labwc uninstall removes only the zigit block" {
     const home = "/tmp/zigit-test-uninstall-labwc";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const dir = home ++ "/.config/labwc";
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     try writeAbsolute(dir ++ "/rc.xml", labwc_rc);
 
     const b = try cmp.install(testing.allocator, .labwc, home, "Print", "zigit capture --overlay");
@@ -50,11 +51,11 @@ test "labwc uninstall removes only the zigit block" {
 
 test "kde uninstall removes only the ZigIt service section" {
     const home = "/tmp/zigit-test-uninstall-kde";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const dir = home ++ "/.config";
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     try writeAbsolute(dir ++ "/kglobalshortcutsrc", kde_rc);
 
     const b = try cmp.install(testing.allocator, .kde, home, "Print", "zigit capture --overlay");
@@ -75,11 +76,11 @@ test "kde uninstall removes only the ZigIt service section" {
 
 test "kde uninstall keeps following sections when zigit is mid-file" {
     const home = "/tmp/zigit-test-uninstall-kde-mid";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const dir = home ++ "/.config";
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     const initial = kde_rc ++ "\n[zigit]\n_s=Print,old,none,old\n\n[other]\nfoo=bar\n";
     try writeAbsolute(dir ++ "/kglobalshortcutsrc", initial);
 
@@ -96,11 +97,11 @@ test "kde uninstall keeps following sections when zigit is mid-file" {
 
 test "kde uninstall restores a replaced Spectacle shortcut" {
     const home = "/tmp/zigit-test-uninstall-kde-spectacle";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const dir = home ++ "/.config";
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     const initial =
         "[services][org.kde.spectacle.desktop]\n" ++
         "OpenWithoutScreenshot=none\n";
@@ -125,16 +126,16 @@ test "kde uninstall restores a replaced Spectacle shortcut" {
     const content = try readAbsolute(b.snippetPath);
     defer testing.allocator.free(content);
     try testing.expectEqualStrings(initial, content);
-    try testing.expectError(error.FileNotFound, std.fs.openFileAbsolute(home ++ "/.local/share/applications/com.visorcraft.zigit.desktop", .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.openFileAbsolute(app_io.get(), home ++ "/.local/share/applications/com.visorcraft.zigit.desktop", .{}));
 }
 
 test "changing KDE hotkey restores the previous Spectacle shortcut" {
     const home = "/tmp/zigit-test-change-kde-shortcut";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const dir = home ++ "/.config";
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     const initial =
         "[services][org.kde.spectacle.desktop]\n" ++
         "OpenWithoutScreenshot=none\n";
@@ -154,26 +155,26 @@ test "changing KDE hotkey restores the previous Spectacle shortcut" {
     defer testing.allocator.free(content);
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, "_launch="));
     try testing.expect(std.mem.indexOf(u8, content, "_launch=Meta+Shift+S") != null);
-    try testing.expectError(error.FileNotFound, std.fs.openFileAbsolute(home ++ "/.config/zigit/kde-shortcut-backup", .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.openFileAbsolute(app_io.get(), home ++ "/.config/zigit/kde-shortcut-backup", .{}));
 }
 
 test "sway uninstall deletes the dedicated file" {
     const home = "/tmp/zigit-test-uninstall-sway";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const b = try cmp.install(testing.allocator, .sway, home, "Print", "zigit capture --overlay");
     defer freeBinding(b);
 
     try cmp.uninstall(testing.allocator, .sway, b);
 
-    try testing.expectError(error.FileNotFound, std.fs.openFileAbsolute(b.snippetPath, .{}));
+    try testing.expectError(error.FileNotFound, std.Io.Dir.openFileAbsolute(app_io.get(), b.snippetPath, .{}));
 }
 
 test "uninstall is a no-op when file is missing or has no zigit content" {
     const home = "/tmp/zigit-test-uninstall-noop";
-    try std.fs.makeDirAbsolute(home);
-    defer std.fs.deleteTreeAbsolute(home) catch {};
+    try std.Io.Dir.createDirAbsolute(app_io.get(), home, .default_dir);
+    defer std.Io.Dir.cwd().deleteTree(app_io.get(), home) catch {};
 
     const missing = try std.fs.path.join(testing.allocator, &.{ home, "nope.conf" });
     defer testing.allocator.free(missing);
@@ -184,7 +185,7 @@ test "uninstall is a no-op when file is missing or has no zigit content" {
     });
 
     const dir = home ++ "/.config/labwc";
-    try std.fs.cwd().makePath(dir);
+    try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
     try writeAbsolute(dir ++ "/rc.xml", labwc_rc);
     const path = try std.fs.path.join(testing.allocator, &.{ dir, "rc.xml" });
     defer testing.allocator.free(path);
@@ -208,11 +209,11 @@ test "gnome uninstall is unsupported" {
 }
 
 fn writeAbsolute(path: []const u8, content: []const u8) !void {
-    const f = try std.fs.createFileAbsolute(path, .{ .truncate = true });
-    defer f.close();
-    try f.writeAll(content);
+    const f = try std.Io.Dir.createFileAbsolute(app_io.get(), path, .{ .truncate = true });
+    defer f.close(app_io.get());
+    try f.writeStreamingAll(app_io.get(), content);
 }
 
 fn readAbsolute(path: []const u8) ![]u8 {
-    return std.fs.cwd().readFileAlloc(testing.allocator, path, 1 << 22);
+    return std.Io.Dir.cwd().readFileAlloc(app_io.get(), path, testing.allocator, .limited(1 << 22));
 }

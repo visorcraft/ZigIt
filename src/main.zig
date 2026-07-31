@@ -6,7 +6,7 @@ const setup = @import("setup");
 const editor_window = @import("editor_window");
 const png = @import("png");
 
-pub const version = "0.2.0";
+pub const version = "0.3.0";
 
 pub fn main(init: std.process.Init) !void {
     app_io.set(init.io);

@@ -185,11 +185,25 @@ pub const Marquee = struct {
     /// Draw the horizontal thumbnail strip into the current ImGui window/child.
     pub fn drawContent(self: *Marquee) void {
         if (self.thumbnails.items.len == 0) {
+            // Centered empty state.
+            var avail: c.ImVec2 = undefined;
+            c.igGetContentRegionAvail(&avail);
+            c.igDummy(.{ .x = 1, .y = @max(0, avail.y * 0.22) });
+            c.igPushStyleColor_Vec4(c.ImGuiCol_Text, .{ .x = 0.93, .y = 0.30, .z = 0.28, .w = 1.0 });
+            // Simple camera-ish glyph via text.
+            const title: [*:0]const u8 = "No captures yet";
+            var tsz: c.ImVec2 = undefined;
+            c.igCalcTextSize(&tsz, title, null, false, -1.0);
+            c.igSetCursorPosX(c.igGetCursorPosX() + @max(0, (avail.x - tsz.x) * 0.5));
+            c.igText("%s", title);
+            c.igPopStyleColor(1);
             c.igSpacing();
-            c.igSpacing();
+            const hint: [*:0]const u8 = "Press Print Screen or click Capture region";
+            var hsz: c.ImVec2 = undefined;
+            c.igCalcTextSize(&hsz, hint, null, false, -1.0);
+            c.igSetCursorPosX(c.igGetCursorPosX() + @max(0, (avail.x - hsz.x) * 0.5));
             c.igPushStyleColor_Vec4(c.ImGuiCol_Text, .{ .x = 0.55, .y = 0.55, .z = 0.60, .w = 1.0 });
-            c.igTextWrapped("No captures yet.");
-            c.igTextWrapped("Press Print Screen (or click Capture region) to take your first screenshot. It will show up here automatically.");
+            c.igText("%s", hint);
             c.igPopStyleColor(1);
             return;
         }
@@ -214,7 +228,7 @@ pub const Marquee = struct {
             // ImGuiCol_FrameBg == 7; index as usize for Zig 0.16 C array access.
             const frame_bg: c.ImVec4 = style.Colors[7];
             c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, frame_bg);
-            c.igPushStyleVar_Float(c.ImGuiStyleVar_ChildRounding, 8.0);
+            c.igPushStyleVar_Float(c.ImGuiStyleVar_ChildRounding, 10.0);
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, .{ .x = card_pad, .y = card_pad });
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, .{ .x = 2.0, .y = 2.0 });
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, .{ .x = 4.0, .y = 6.0 });
@@ -288,23 +302,71 @@ pub const Marquee = struct {
                     }
                     c.igEndPopup();
                 }
+
+                // "Latest" badge on the newest capture.
+                if (i == 0) {
+                    var rmin: c.ImVec2 = undefined;
+                    c.igGetItemRectMin(&rmin);
+                    const dl = c.igGetWindowDrawList();
+                    const badge_min = c.ImVec2{ .x = rmin.x + 4, .y = rmin.y + 4 };
+                    const badge_max = c.ImVec2{ .x = rmin.x + 48, .y = rmin.y + 20 };
+                    c.ImDrawList_AddRectFilled(dl, badge_min, badge_max, c.igColorConvertFloat4ToU32(.{ .x = 0.86, .y = 0.24, .z = 0.22, .w = 0.92 }), 5.0, 0);
+                    c.ImDrawList_AddText_Vec2(dl, .{ .x = badge_min.x + 7, .y = badge_min.y + 2 }, c.igColorConvertFloat4ToU32(.{ .x = 1, .y = 1, .z = 1, .w = 1 }), "NEW", null);
+                }
             } else if (t.broken) {
                 c.igTextDisabled("(broken)");
             } else {
                 c.igTextDisabled("(loading…)");
             }
 
+            // Truncate long basenames for the label under the thumb.
             const name = std.fs.path.basename(t.path);
-            var nbuf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            const m = @min(name.len, nbuf.len - 1);
-            @memcpy(nbuf[0..m], name[0..m]);
-            nbuf[m] = 0;
-            // Truncate long names visually.
-            c.igTextDisabled("%s", nbuf[0..m :0].ptr);
+            var nbuf: [48]u8 = undefined;
+            const shown = truncateMiddle(name, nbuf[0..47]);
+            nbuf[shown.len] = 0;
+            c.igTextDisabled("%s", nbuf[0..shown.len :0].ptr);
 
             c.igEndChild();
+            // Hover accent ring around the whole card.
+            if (c.igIsItemHovered(0)) {
+                var rmin: c.ImVec2 = undefined;
+                var rmax: c.ImVec2 = undefined;
+                c.igGetItemRectMin(&rmin);
+                c.igGetItemRectMax(&rmax);
+                c.ImDrawList_AddRect(
+                    c.igGetWindowDrawList(),
+                    rmin,
+                    rmax,
+                    c.igColorConvertFloat4ToU32(.{ .x = 0.93, .y = 0.32, .z = 0.28, .w = 0.85 }),
+                    10.0,
+                    0,
+                    1.5,
+                );
+            }
             c.igPopStyleVar(4); // ItemSpacing, FramePadding, WindowPadding, ChildRounding
             c.igPopStyleColor(1);
         }
     }
 };
+
+/// Truncate `name` into `out` with a middle `...` when too long.
+fn truncateMiddle(name: []const u8, out: []u8) []const u8 {
+    const max = out.len;
+    if (name.len <= max) {
+        @memcpy(out[0..name.len], name);
+        return out[0..name.len];
+    }
+    if (max < 7) {
+        const n = @min(name.len, max);
+        @memcpy(out[0..n], name[0..n]);
+        return out[0..n];
+    }
+    const dots = "...";
+    const keep = max - dots.len;
+    const left = keep / 2;
+    const right = keep - left;
+    @memcpy(out[0..left], name[0..left]);
+    @memcpy(out[left..][0..dots.len], dots);
+    @memcpy(out[left + dots.len ..][0..right], name[name.len - right ..]);
+    return out[0 .. left + dots.len + right];
+}

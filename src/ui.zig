@@ -153,7 +153,7 @@ pub const Ui = struct {
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MAJOR, 3);
         c.glfwWindowHint(c.GLFW_CONTEXT_VERSION_MINOR, 0);
         app_icon.applyWindowHints(c);
-        const w = c.glfwCreateWindow(820, 560, "ZigIt", null, null);
+        const w = c.glfwCreateWindow(960, 640, "ZigIt", null, null);
         if (w == null) return error.WindowFailed;
         defer c.glfwDestroyWindow(w);
         app_icon.setWindowIcon(c, w);
@@ -279,15 +279,22 @@ pub const Ui = struct {
             c.igText("ZigIt");
             c.igPopStyleColor(1);
             theme_mod.popTitle();
-            c.igSameLine(0.0, 14.0);
+            c.igSameLine(0.0, 12.0);
             c.igSetCursorPosY(c.igGetCursorPosY() + 6.0);
             c.igTextDisabled("Screenshot tool");
-            // Right-aligned compositor badge.
+            // Right-aligned compositor pill.
             var badge_sz: c.ImVec2 = undefined;
             c.igCalcTextSize(&badge_sz, compositorNameZ(detected), null, false, -1.0);
-            c.igSameLine(io.*.DisplaySize.x - badge_sz.x - 36.0, 0.0);
-            c.igSetCursorPosY(c.igGetCursorPosY() + 6.0);
-            c.igTextDisabled("%s", compositorNameZ(detected));
+            c.igSameLine(io.*.DisplaySize.x - badge_sz.x - 56.0, 0.0);
+            c.igSetCursorPosY(c.igGetCursorPosY() + 3.0);
+            c.igPushStyleColor_Vec4(c.ImGuiCol_Button, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
+            c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonHovered, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
+            c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonActive, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
+            c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, .{ .x = 10.0, .y = 4.0 });
+            c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, 8.0);
+            _ = c.igSmallButton(compositorNameZ(detected));
+            c.igPopStyleVar(2);
+            c.igPopStyleColor(3);
 
             c.igSpacing();
             c.igSpacing();
@@ -435,40 +442,54 @@ fn drawCaptures(
     capture_dir: []const u8,
     toast: *toast_mod.Toast,
 ) void {
-    c.igTextDisabled("Recent captures. Click a thumbnail to open the editor.");
-    c.igSpacing();
-
     // Quick actions
     theme_mod.pushAccent();
-    if (c.igButton("Capture region", .{ .x = 148, .y = 36 })) {
+    if (c.igButton("Capture region", .{ .x = 152, .y = 38 })) {
         spawnCapture(allocator, &.{ "zigit", "capture" }, toast);
     }
     theme_mod.popAccent();
     c.igSameLine(0.0, 10.0);
     theme_mod.pushGhost();
-    if (c.igButton("Capture window", .{ .x = 148, .y = 36 })) {
+    if (c.igButton("Capture window", .{ .x = 152, .y = 38 })) {
         spawnCapture(allocator, &.{ "zigit", "capture", "--window" }, toast);
     }
     theme_mod.popGhost();
     c.igSameLine(0.0, 10.0);
     theme_mod.pushGhost();
-    if (c.igButton("Open folder", .{ .x = 128, .y = 36 })) {
+    if (c.igButton("Open folder", .{ .x = 130, .y = 38 })) {
         openFolder(allocator, capture_dir, toast);
     }
     theme_mod.popGhost();
     c.igSameLine(0.0, 14.0);
     c.igSetCursorPosY(c.igGetCursorPosY() + 8.0);
-    c.igTextDisabled("%zu capture(s)", marquee.thumbnails.items.len);
+    var count_buf: [48]u8 = undefined;
+    const count_z = std.fmt.bufPrintZ(&count_buf, "{d} capture{s}", .{
+        marquee.thumbnails.items.len,
+        if (marquee.thumbnails.items.len == 1) "" else "s",
+    }) catch "captures";
+    c.igPushStyleColor_Vec4(c.ImGuiCol_Button, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
+    c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonHovered, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
+    c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonActive, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, .{ .x = 10.0, .y = 4.0 });
+    c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, 8.0);
+    _ = c.igSmallButton(count_z.ptr);
+    c.igPopStyleVar(2);
+    c.igPopStyleColor(3);
 
     c.igSpacing();
+    c.igTextDisabled("Click a thumbnail to open the editor · right-click for more");
     c.igSpacing();
 
     // Thumbnail strip fills remaining space.
     var avail: c.ImVec2 = undefined;
     c.igGetContentRegionAvail(&avail);
-    _ = c.igBeginChild_Str("##marquee_strip", .{ .x = avail.x, .y = avail.y - 4 }, 0, c.ImGuiWindowFlags_HorizontalScrollbar);
+    c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, .{ .x = 0.07, .y = 0.07, .z = 0.08, .w = 1.0 });
+    c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, .{ .x = 12.0, .y = 12.0 });
+    _ = c.igBeginChild_Str("##marquee_strip", .{ .x = avail.x, .y = avail.y - 4 }, c.ImGuiChildFlags_Borders, c.ImGuiWindowFlags_HorizontalScrollbar);
     marquee.drawContent();
     c.igEndChild();
+    c.igPopStyleVar(1);
+    c.igPopStyleColor(1);
 }
 
 fn drawSettings(

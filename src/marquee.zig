@@ -1,0 +1,258 @@
+const std = @import("std");
+const c = @cImport({
+    @cInclude("GLES2/gl2.h");
+    // Without this define cimgui.h falls back to C++ template typedefs
+    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
+    @cDefine("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
+    @cInclude("cimgui.h");
+});
+const png = @import("png");
+const watcher = @import("watcher");
+
+fn uploadTexture(rgba: []const u8, w: u32, h: u32) c_uint {
+    var tex: c_uint = 0;
+    c.glGenTextures(1, &tex);
+    c.glBindTexture(c.GL_TEXTURE_2D, tex);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+    // GL_RGBA8 lives in gl3.h; GLES2's gl2.h only guarantees GL_RGBA, which is
+    // also accepted as the internal format here.
+    c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, @intCast(w), @intCast(h), 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, rgba.ptr);
+    return tex;
+}
+
+pub const Marquee = struct {
+    allocator: std.mem.Allocator,
+    dir: []const u8,
+    thumbnails: std.ArrayList(Thumbnail),
+    watch: watcher.Watcher,
+
+    pub const Thumbnail = struct {
+        path: []u8,
+        last_modified: i128,
+        // GL texture id; 0 means not yet uploaded (or upload failed).
+        texture: c_uint = 0,
+        width: u32 = 0,
+        height: u32 = 0,
+        // Decode/upload already failed once; do not retry every frame.
+        broken: bool = false,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, dir: []const u8) !Marquee {
+        var thumbs = std.ArrayList(Thumbnail).init(allocator);
+        // On any failure, free both the backing array and every path string
+        // already appended.
+        errdefer {
+            for (thumbs.items) |t| freeThumb(allocator, t);
+            thumbs.deinit();
+        }
+        // Pre-load existing PNGs in dir.
+        var d = try std.fs.openDirAbsolute(dir, .{ .iterate = true });
+        defer d.close();
+        var it = d.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".png")) continue;
+            const p = try std.fs.path.join(allocator, &.{ dir, entry.name });
+            thumbs.append(.{ .path = p, .last_modified = 0 }) catch |e| {
+                allocator.free(p);
+                return e;
+            };
+        }
+        sortNewestFirst(&thumbs);
+        const w = try watcher.Watcher.init(dir);
+        return .{ .allocator = allocator, .dir = dir, .thumbnails = thumbs, .watch = w };
+    }
+
+    pub fn deinit(self: *Marquee) void {
+        for (self.thumbnails.items) |t| freeThumb(self.allocator, t);
+        self.thumbnails.deinit();
+        self.watch.deinit();
+    }
+
+    pub fn poll(self: *Marquee) !void {
+        while (try self.watch.tryRead()) |ev| {
+            switch (ev) {
+                .created => try self.refresh(),
+                .deleted => try self.refresh(),
+                .modified => {},
+            }
+        }
+    }
+
+    // Release one entry's GL texture and path. Textures are deleted here, and
+    // only here, so repeated refresh/deinit cannot double-free.
+    fn freeThumb(allocator: std.mem.Allocator, t: Thumbnail) void {
+        if (t.texture != 0) {
+            var tex = t.texture;
+            c.glDeleteTextures(1, &tex);
+        }
+        allocator.free(t.path);
+    }
+
+    fn refresh(self: *Marquee) !void {
+        for (self.thumbnails.items) |t| freeThumb(self.allocator, t);
+        self.thumbnails.clearRetainingCapacity();
+        // If repopulation fails partway, free the paths appended so far and
+        // leave the list empty rather than holding stale half-state.
+        errdefer {
+            for (self.thumbnails.items) |t| freeThumb(self.allocator, t);
+            self.thumbnails.clearRetainingCapacity();
+        }
+        var d = try std.fs.openDirAbsolute(self.dir, .{ .iterate = true });
+        defer d.close();
+        var it = d.iterate();
+        while (try it.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".png")) continue;
+            const p = try std.fs.path.join(self.allocator, &.{ self.dir, entry.name });
+            self.thumbnails.append(.{ .path = p, .last_modified = 0 }) catch |e| {
+                self.allocator.free(p);
+                return e;
+            };
+        }
+        sortNewestFirst(&self.thumbnails);
+    }
+
+    fn sortNewestFirst(thumbs: *std.ArrayList(Thumbnail)) void {
+        // Lexicographic reverse on basename works for our timestamped names
+        // (YYYY-MM-DD_HH-MM-SS.png sorts chronologically).
+        std.mem.sort(Thumbnail, thumbs.items, {}, struct {
+            fn less(_: void, a: Thumbnail, b: Thumbnail) bool {
+                const an = std.fs.path.basename(a.path);
+                const bn = std.fs.path.basename(b.path);
+                return std.mem.order(u8, an, bn) == .gt;
+            }
+        }.less);
+    }
+
+    // Lazily decode the PNG and upload it as a GL texture on first draw.
+    // Failures mark the entry broken and are logged once; the frame loop keeps
+    // running and the entry is skipped.
+    fn ensureTexture(self: *Marquee, t: *Thumbnail) void {
+        if (t.texture != 0 or t.broken) return;
+        const bytes = std.fs.cwd().readFileAlloc(self.allocator, t.path, 32 * 1024 * 1024) catch |e| {
+            std.debug.print("zigit: marquee: cannot read {s}: {s}\n", .{ t.path, @errorName(e) });
+            t.broken = true;
+            return;
+        };
+        defer self.allocator.free(bytes);
+        var w: u32 = 0;
+        var h: u32 = 0;
+        const px = png.decode(self.allocator, bytes, &w, &h) catch |e| {
+            std.debug.print("zigit: marquee: cannot decode {s}: {s}\n", .{ t.path, @errorName(e) });
+            t.broken = true;
+            return;
+        };
+        defer self.allocator.free(px);
+        t.texture = uploadTexture(px, w, h);
+        t.width = w;
+        t.height = h;
+    }
+
+    /// Draw as a standalone floating window (legacy / simple mode).
+    pub fn draw(self: *Marquee) void {
+        c.igSetNextWindowPos(.{ .x = 10, .y = 10 }, c.ImGuiCond_FirstUseEver, .{ .x = 0, .y = 0 });
+        c.igSetNextWindowSize(.{ .x = 420, .y = 200 }, c.ImGuiCond_FirstUseEver);
+        _ = c.igBegin("ZigIt Captures", null, c.ImGuiWindowFlags_HorizontalScrollbar);
+        self.drawContent();
+        c.igEnd();
+    }
+
+    /// Draw the horizontal thumbnail strip into the current ImGui window/child.
+    pub fn drawContent(self: *Marquee) void {
+        if (self.thumbnails.items.len == 0) {
+            c.igSpacing();
+            c.igSpacing();
+            c.igPushStyleColor_Vec4(c.ImGuiCol_Text, .{ .x = 0.55, .y = 0.55, .z = 0.60, .w = 1.0 });
+            c.igTextWrapped("No captures yet.");
+            c.igTextWrapped("Press Print Screen (or click Capture region) to take your first screenshot. It will show up here automatically.");
+            c.igPopStyleColor(1);
+            return;
+        }
+
+        const card_h: f32 = 150.0;
+        const card_w: f32 = 200.0;
+        const thumb_max_w: f32 = 180.0;
+        const thumb_max_h: f32 = 110.0;
+
+        for (self.thumbnails.items, 0..) |*t, i| {
+            if (i > 0) c.igSameLine(0.0, 12.0);
+
+            // Unique child id per path.
+            var id_buf: [32]u8 = undefined;
+            const id_z = std.fmt.bufPrintZ(&id_buf, "##card{d}", .{i}) catch "##card";
+            // Pull card fill from the active theme so light mode stays readable.
+            const style = c.igGetStyle();
+            c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, style.*.Colors[c.ImGuiCol_FrameBg]);
+            c.igPushStyleVar_Float(c.ImGuiStyleVar_ChildRounding, 8.0);
+            _ = c.igBeginChild_Str(id_z.ptr, .{ .x = card_w, .y = card_h }, c.ImGuiChildFlags_Borders, 0);
+
+            self.ensureTexture(t);
+            if (t.texture != 0 and t.width > 0 and t.height > 0) {
+                const scale = @min(thumb_max_w / @as(f32, @floatFromInt(t.width)), thumb_max_h / @as(f32, @floatFromInt(t.height)));
+                const size: c.ImVec2 = .{
+                    .x = @floor(@as(f32, @floatFromInt(t.width)) * scale),
+                    .y = @floor(@as(f32, @floatFromInt(t.height)) * scale),
+                };
+                // Center thumbnail in card.
+                const pad_x = @max(0, (card_w - 16.0 - size.x) * 0.5);
+                if (pad_x > 0) c.igSetCursorPosX(c.igGetCursorPosX() + pad_x);
+
+                var buf: [std.fs.max_path_bytes]u8 = undefined;
+                const n = @min(t.path.len, buf.len - 1);
+                @memcpy(buf[0..n], t.path[0..n]);
+                buf[n] = 0;
+                if (c.igImageButton(
+                    buf[0..n :0].ptr,
+                    @as(c.ImTextureID, t.texture),
+                    size,
+                    .{ .x = 0, .y = 0 },
+                    .{ .x = 1, .y = 1 },
+                    .{ .x = 0, .y = 0, .z = 0, .w = 0 },
+                    .{ .x = 1, .y = 1, .z = 1, .w = 1 },
+                )) {
+                    var child = std.process.Child.init(&.{ "zigit", "edit", t.path }, self.allocator);
+                    child.spawn() catch |e| {
+                        std.debug.print("zigit: failed to open editor for {s}: {s}\n", .{ t.path, @errorName(e) });
+                    };
+                }
+                if (c.igIsItemHovered(0)) {
+                    c.igSetTooltip("%s", buf[0..n :0].ptr);
+                }
+                // Right-click context menu.
+                if (c.igBeginPopupContextItem(buf[0..n :0].ptr, 1)) {
+                    if (c.igMenuItem_Bool("Open", null, false, true)) {
+                        var child = std.process.Child.init(&.{ "zigit", "edit", t.path }, self.allocator);
+                        child.spawn() catch {};
+                    }
+                    if (c.igMenuItem_Bool("Copy path", null, false, true)) {
+                        // Best-effort: wl-copy the path as text.
+                        var child = std.process.Child.init(&.{ "wl-copy", t.path }, self.allocator);
+                        child.spawn() catch {};
+                    }
+                    if (c.igMenuItem_Bool("Delete", null, false, true)) {
+                        std.fs.deleteFileAbsolute(t.path) catch |e| {
+                            std.debug.print("zigit: delete failed: {s}\n", .{@errorName(e)});
+                        };
+                    }
+                    c.igEndPopup();
+                }
+            } else {
+                c.igTextDisabled("(broken)");
+            }
+
+            const name = std.fs.path.basename(t.path);
+            var nbuf: [std.fs.max_path_bytes]u8 = undefined;
+            const m = @min(name.len, nbuf.len - 1);
+            @memcpy(nbuf[0..m], name[0..m]);
+            nbuf[m] = 0;
+            // Truncate long names visually.
+            c.igTextDisabled("%s", nbuf[0..m :0].ptr);
+
+            c.igEndChild();
+            c.igPopStyleVar(1);
+            c.igPopStyleColor(1);
+        }
+    }
+};

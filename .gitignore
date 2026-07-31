@@ -1,0 +1,6 @@
+zig-out/
+.zig-cache/
+*.log
+vendor/imgui/build/
+vendor/glfw/build/
+imgui.ini

@@ -17,7 +17,7 @@ ZigIt is a Wayland-first alternative to capture tools that stop after writing
 a file. A daemon keeps recent screenshots visible, settings stay in a plain
 TOML file, and one binary provides capture, editing, and compositor setup.
 
-Current release: **0.1.1**.
+Current release: **0.2.0**.
 
 ## Why ZigIt?
 

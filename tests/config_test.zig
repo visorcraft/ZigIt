@@ -17,6 +17,7 @@ test "load returns defaults when config file missing" {
     const c = try cfg.Config.load(testing.allocator, "/nonexistent");
     defer c.deinit(testing.allocator);
     try testing.expectEqualStrings("Print", c.hotkey);
+    try testing.expect(c.capture_mode == .region);
     try testing.expect(c.theme == .dark);
     try testing.expect(c.marquee_position == .top_right);
 }
@@ -29,6 +30,7 @@ test "load parses full schema" {
         .data =
         \\hotkey = "Super+Shift+S"
         \\save_dir = "/tmp/shots"
+        \\capture_mode = "fullscreen"
         \\marquee_position = "bottom-left"
         \\theme = "light"
         \\default_color = "#00ff88"
@@ -43,6 +45,7 @@ test "load parses full schema" {
     defer c.deinit(testing.allocator);
     try testing.expectEqualStrings("Super+Shift+S", c.hotkey);
     try testing.expectEqualStrings("/tmp/shots", c.save_dir);
+    try testing.expect(c.capture_mode == .fullscreen);
     try testing.expect(c.marquee_position == .bottom_left);
     try testing.expect(c.theme == .light);
     try testing.expectEqual(@as(u8, 0x00), c.default_color_rgba[0]);
@@ -63,6 +66,7 @@ test "save round-trips preferences" {
     const original = cfg.Config{
         .save_dir = "/tmp/zigit-captures",
         .hotkey = "Print",
+        .capture_mode = .window,
         .marquee_position = .top_left,
         .theme = .light,
         .default_color_rgba = .{ 0xaa, 0xbb, 0xcc, 0xff },
@@ -74,6 +78,7 @@ test "save round-trips preferences" {
     defer loaded.deinit(testing.allocator);
     try testing.expectEqualStrings(original.save_dir, loaded.save_dir);
     try testing.expectEqualStrings(original.hotkey, loaded.hotkey);
+    try testing.expect(loaded.capture_mode == .window);
     try testing.expect(loaded.marquee_position == .top_left);
     try testing.expect(loaded.theme == .light);
     try testing.expectEqual(@as(u8, 0xaa), loaded.default_color_rgba[0]);

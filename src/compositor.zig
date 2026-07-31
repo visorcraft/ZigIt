@@ -70,7 +70,9 @@ pub const ShortcutOwner = struct {
     }
 
     pub fn isZigit(self: ShortcutOwner) bool {
-        return std.mem.eql(u8, self.component, kde_component);
+        return std.mem.eql(u8, self.component, kde_component) or
+            // Pre-0.1.2 builds bound the hotkey to the app desktop id.
+            std.mem.eql(u8, self.component, "com.visorcraft.zigit.desktop");
     }
 
     pub fn isSpectacle(self: ShortcutOwner) bool {
@@ -141,8 +143,13 @@ const max_config_bytes = 1 << 22; // 4 MiB
 
 const labwc_begin = "<!-- BEGIN ZIGIT -->\n";
 const labwc_end = "<!-- END ZIGIT -->\n";
-const kde_component = "com.visorcraft.zigit.desktop";
+// Capture-only launcher. Must NOT share the app desktop id
+// (com.visorcraft.zigit.desktop): packaging + installUserChrome own that file
+// for the daemon, and would overwrite Exec= on every install/launch.
+const kde_component = "com.visorcraft.zigit.capture.desktop";
 const kde_header = "[services][" ++ kde_component ++ "]";
+// Older builds bound Print to the app desktop; strip that section on install.
+const kde_legacy_app_header = "[services][com.visorcraft.zigit.desktop]";
 const kde_legacy_header = "[zigit]";
 const kde_config_suffix = "/.config/kglobalshortcutsrc";
 
@@ -455,6 +462,14 @@ pub fn install(
                 try content.append('\n');
             }
             try content.appendSlice(snippet);
+            // App desktop (daemon) must NOT keep Print — live kglobalaccel still
+            // had Print on com.visorcraft.zigit.desktop alongside the capture
+            // launcher, so Print could invoke the wrong component.
+            try setKdeEntry(&content, kde_legacy_app_header, "_launch", "none");
+            // Clear competing Spectacle Print bindings so our capture desktop
+            // is the sole owner of Print (desktop defaults otherwise re-bind
+            // fullscreen via X-KDE-Shortcuts=Print on org.kde.spectacle.desktop).
+            try clearSpectaclePrintConflicts(&content, hotkey);
             try writeKdeLauncher(allocator, home, hotkey, action);
         },
         .gnome, .unknown => unreachable,
@@ -463,7 +478,101 @@ pub fn install(
     try writeFileAbsolute(path, content.items);
     if (restored_kde_backup) |backup| std.Io.Dir.deleteFileAbsolute(app_io.get(), backup) catch {};
 
+    // After writing files, push live shortcut ownership via DBus when possible
+    // so Print works without a full logout.
+    if (compositor_enum == .kde) {
+        pushKdeLiveShortcuts(allocator, hotkey) catch {};
+    }
+
     return .{ .snippetPath = path, .reload = reload_kind, .snippet = snippet };
+}
+
+/// Qt::Key_Print — must match what kglobalaccel uses for the Print key.
+const qt_key_print: []const u8 = "16777225";
+
+/// Drop the daemon app-desktop from Print (and re-assert capture owns it).
+/// Live kglobalaccel often keeps Print on *both* com.visorcraft.zigit.desktop
+/// and .capture.desktop; dual owners break region capture without a logout.
+fn pushKdeLiveShortcuts(allocator: std.mem.Allocator, hotkey: []const u8) !void {
+    var env = try app_io.processEnvMap(allocator);
+    defer env.deinit();
+    // unRegister is what actually removes a live dual Print binding; setShortcut([]) does not.
+    const app_ids = [_][]const u8{
+        "['com.visorcraft.zigit.desktop', '_launch', 'ZigIt Capture', 'ZigIt Capture']",
+        "['com.visorcraft.zigit.desktop', '_launch', 'ZigIt', 'ZigIt']",
+    };
+    for (app_ids) |aid| {
+        runCommand(allocator, &env, &.{
+            "gdbus", "call", "--session",
+            "--dest", "org.kde.kglobalaccel",
+            "--object-path", "/kglobalaccel",
+            "--method", "org.kde.KGlobalAccel.unRegister",
+            aid,
+        }) catch {};
+    }
+    // Ensure capture desktop owns Print when configured.
+    if (std.mem.eql(u8, hotkey, "Print") or std.mem.endsWith(u8, hotkey, "+Print")) {
+        const keys = try std.fmt.allocPrint(allocator, "[{s}]", .{qt_key_print});
+        defer allocator.free(keys);
+        runCommand(allocator, &env, &.{
+            "gdbus", "call", "--session",
+            "--dest", "org.kde.kglobalaccel",
+            "--object-path", "/kglobalaccel",
+            "--method", "org.kde.KGlobalAccel.doRegister",
+            "['com.visorcraft.zigit.capture.desktop', '_launch', 'ZigIt Capture', 'ZigIt Capture']",
+        }) catch {};
+        runCommand(allocator, &env, &.{
+            "gdbus", "call", "--session",
+            "--dest", "org.kde.kglobalaccel",
+            "--object-path", "/kglobalaccel",
+            "--method", "org.kde.KGlobalAccel.setShortcut",
+            "['com.visorcraft.zigit.capture.desktop', '_launch', 'ZigIt Capture', 'ZigIt Capture']",
+            keys,
+            "4",
+        }) catch {};
+    }
+}
+
+const spectacle_header = "[services][org.kde.spectacle.desktop]";
+
+/// Zero out Spectacle service actions that still claim Print (or the same
+/// chord as ZigIt's hotkey). Leaves unrelated remaps (e.g. Meta+Shift+S) alone.
+fn clearSpectaclePrintConflicts(content: *std.array_list.Managed(u8), hotkey: []const u8) !void {
+    const actions = [_][]const u8{
+        "_launch",
+        "FullScreenScreenShot",
+        "CurrentMonitorScreenShot",
+        "ActiveWindowScreenShot",
+        "RectangularRegionScreenShot",
+        "WindowUnderCursorScreenShot",
+        "OpenWithoutScreenshot",
+    };
+    const claims_print = std.mem.indexOf(u8, hotkey, "Print") != null;
+    for (actions) |action| {
+        if (kdeEntryValue(content.items, spectacle_header, action)) |val| {
+            // KDE stores default-key form as a literal backslash-t prefix ("\\t…"),
+            // not a real tab character.
+            const default_form = std.mem.startsWith(u8, val, "\\t");
+            if (std.mem.indexOf(u8, val, "Print") != null) {
+                try setKdeEntry(content, spectacle_header, action, "none");
+            } else if (claims_print and std.mem.eql(u8, action, "_launch") and default_form) {
+                // Default form still merges desktop X-KDE-Shortcuts=Print.
+                // Pin an explicit non-Print binding.
+                if (std.mem.indexOf(u8, val, "Meta+Shift+S") != null) {
+                    try setKdeEntry(content, spectacle_header, action, "Meta+Shift+S");
+                } else {
+                    try setKdeEntry(content, spectacle_header, action, "none");
+                }
+            }
+        } else if (claims_print and (std.mem.eql(u8, action, "_launch") or std.mem.eql(u8, action, "FullScreenScreenShot"))) {
+            // Suppress desktop-file default X-KDE-Shortcuts=Print for launch/fullscreen.
+            try setKdeEntry(content, spectacle_header, action, "none");
+        }
+    }
+    if (claims_print) {
+        // Always force fullscreen action off when ZigIt owns Print.
+        try setKdeEntry(content, spectacle_header, "FullScreenScreenShot", "none");
+    }
 }
 
 pub fn uninstall(
@@ -629,11 +738,148 @@ pub fn reloadWithEnv(
         .swaymsg => try runCommand(allocator, env, &.{ "swaymsg", "reload" }),
         .hyprctl => try runCommand(allocator, env, &.{ "hyprctl", "reload" }),
         .kglobalaccel => {
-            try runCommand(allocator, env, &.{"kbuildsycoca6"});
-            try runCommand(allocator, env, &.{ "systemctl", "--user", "restart", "plasma-kglobalaccel.service" });
+            // sycoca refresh + service bounce. kglobalacceld often exits after
+            // registering on DBus (unit looks inactive); non-zero systemctl is
+            // still OK if the DBus name is up. Fail only if both steps fail.
+            const cache_ok = if (runCommand(allocator, env, &.{"kbuildsycoca6"})) |_| true else |_| false;
+            const restart_ok = if (runCommand(allocator, env, &.{ "systemctl", "--user", "restart", "plasma-kglobalaccel.service" })) |_| true else |_| false;
+            if (!cache_ok and !restart_ok) return error.ReloadFailed;
         },
         .labwc_reload => try runCommand(allocator, env, &.{ "labwc", "-r" }),
     }
+}
+
+/// KWin (Plasma Wayland) never delivers GLFW iconify callbacks for SSD minimize.
+/// Install a small KWin script that turns ZigIt minimize into a close request;
+/// the daemon's close handler then hide-to-trays (unmap, no taskbar entry).
+const kde_min_to_tray_plugin = "zigit-tray-minimize";
+const kde_min_to_tray_js =
+    \\function zigitIsUs(w) {
+    \\    try {
+    \\        const rc = (w.resourceClass || "").toString().toLowerCase();
+    \\        const rn = (w.resourceName || "").toString().toLowerCase();
+    \\        const cap = (w.caption || "").toString();
+    \\        const df = (w.desktopFileName || "").toString().toLowerCase();
+    \\        return rc.indexOf("zigit") >= 0 || rn.indexOf("zigit") >= 0
+    \\            || rc === "com.visorcraft.zigit" || df.indexOf("com.visorcraft.zigit") >= 0
+    \\            || cap.indexOf("ZigIt") === 0;
+    \\    } catch (e) { return false; }
+    \\}
+    \\function zigitOnMinimized() {
+    \\    const w = this;
+    \\    try {
+    \\        if (w.minimized && zigitIsUs(w)) {
+    \\            // closeWindow → xdg close → daemon hideToTray (drops taskbar entry)
+    \\            w.closeWindow();
+    \\        }
+    \\    } catch (e) {}
+    \\}
+    \\function zigitHook(w) {
+    \\    if (!zigitIsUs(w)) return;
+    \\    try { w.minimizedChanged.connect(zigitOnMinimized.bind(w)); } catch (e) {}
+    \\}
+    \\function zigitWindows() {
+    \\    try {
+    \\        if (typeof workspace.windowList === "function") return workspace.windowList();
+    \\        if (typeof workspace.clientList === "function") return workspace.clientList();
+    \\    } catch (e) {}
+    \\    return [];
+    \\}
+    \\try {
+    \\    zigitWindows().forEach(zigitHook);
+    \\    workspace.windowAdded.connect(zigitHook);
+    \\} catch (e) {}
+    \\
+;
+
+/// Best-effort: write + load the KWin minimize→tray script. No-op on failure
+/// (non-KDE, gdbus missing, scripting disabled). Safe to call every daemon start.
+pub fn installKdeMinimizeToTrayHook(allocator: std.mem.Allocator) void {
+    installKdeMinimizeToTrayHookInner(allocator) catch |e| {
+        std.debug.print("zigit: KDE minimize→tray hook unavailable ({s})\n", .{@errorName(e)});
+    };
+}
+
+fn installKdeMinimizeToTrayHookInner(allocator: std.mem.Allocator) !void {
+    const io = app_io.get();
+    const path = try kdeMinToTrayScriptPath(allocator);
+    defer allocator.free(path);
+
+    // Ensure parent dir exists, then write script if content changed.
+    if (std.fs.path.dirname(path)) |dir| {
+        try std.Io.Dir.cwd().createDirPath(io, dir);
+    }
+    try writeFileIfChanged(path, kde_min_to_tray_js);
+
+    var env = try app_io.processEnvMap(allocator);
+    defer env.deinit();
+
+    // Refresh script each start so updates apply without a Plasma restart.
+    runCommand(allocator, &env, &.{
+        "gdbus",         "call",
+        "--session",     "--dest",
+        "org.kde.KWin",  "--object-path",
+        "/Scripting",    "--method",
+        "org.kde.kwin.Scripting.unloadScript",
+        kde_min_to_tray_plugin,
+    }) catch {};
+
+    const out = try runCommandCapture(allocator, &env, &.{
+        "gdbus",         "call",
+        "--session",     "--dest",
+        "org.kde.KWin",  "--object-path",
+        "/Scripting",    "--method",
+        "org.kde.kwin.Scripting.loadScript",
+        path,
+        kde_min_to_tray_plugin,
+    });
+    defer allocator.free(out);
+
+    // gdbus prints e.g. "(3,)\n" — run that ScriptN so the hook is live.
+    const id = parseGdbusInt(out) orelse return error.BadScriptId;
+    var obj_buf: [64]u8 = undefined;
+    const obj = try std.fmt.bufPrint(&obj_buf, "/Scripting/Script{d}", .{id});
+    try runCommand(allocator, &env, &.{
+        "gdbus",        "call",
+        "--session",    "--dest",
+        "org.kde.KWin", "--object-path",
+        obj,            "--method",
+        "org.kde.kwin.Script.run",
+    });
+}
+
+fn kdeMinToTrayScriptPath(allocator: std.mem.Allocator) ![]u8 {
+    if (std.c.getenv("XDG_DATA_HOME")) |z| {
+        const dh = std.mem.span(z);
+        if (dh.len > 0) {
+            return std.fs.path.join(allocator, &.{ dh, "zigit", "kwin-minimize-to-tray.js" });
+        }
+    }
+    const home = std.mem.span(std.c.getenv("HOME") orelse return error.NoHome);
+    return std.fs.path.join(allocator, &.{ home, ".local/share/zigit", "kwin-minimize-to-tray.js" });
+}
+
+fn writeFileIfChanged(path: []const u8, bytes: []const u8) !void {
+    const io = app_io.get();
+    if (std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .limited(1 << 20))) |existing| {
+        defer std.heap.page_allocator.free(existing);
+        if (std.mem.eql(u8, existing, bytes)) return;
+    } else |_| {}
+    const f = try std.Io.Dir.createFileAbsolute(io, path, .{ .truncate = true });
+    defer f.close(io);
+    try f.writeStreamingAll(io, bytes);
+}
+
+fn parseGdbusInt(out: []const u8) ?i32 {
+    // Accept "(3,)", "(3, )\n", "3"
+    var i: usize = 0;
+    while (i < out.len and (out[i] < '0' or out[i] > '9') and out[i] != '-') : (i += 1) {}
+    if (i >= out.len) return null;
+    const start = i;
+    if (out[i] == '-') i += 1;
+    while (i < out.len and out[i] >= '0' and out[i] <= '9') : (i += 1) {}
+    if (i == start or (i == start + 1 and out[start] == '-')) return null;
+    return std.fmt.parseInt(i32, out[start..i], 10) catch null;
 }
 
 fn runCommand(
@@ -656,6 +902,43 @@ fn runCommand(
         }
     }
     try spawnAndCheck(allocator, env, resolved_argv.items);
+}
+
+fn runCommandCapture(
+    allocator: std.mem.Allocator,
+    env: *std.process.Environ.Map,
+    argv: []const []const u8,
+) ![]u8 {
+    var resolved_argv = try std.array_list.Managed([]const u8).initCapacity(allocator, argv.len);
+    defer resolved_argv.deinit();
+    try resolved_argv.appendSlice(argv);
+    var owned_full: ?[]u8 = null;
+    defer if (owned_full) |p| allocator.free(p);
+    if (std.mem.indexOfScalar(u8, argv[0], '/') == null) {
+        if (try resolveOnPath(allocator, env, argv[0])) |full| {
+            owned_full = full;
+            resolved_argv.items[0] = full;
+        }
+    }
+    const io = app_io.get();
+    const result = try std.process.run(allocator, io, .{
+        .argv = resolved_argv.items,
+        .environ_map = env,
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(4096),
+    });
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) {
+            allocator.free(result.stdout);
+            return error.CommandFailed;
+        },
+        else => {
+            allocator.free(result.stdout);
+            return error.CommandFailed;
+        },
+    }
+    return result.stdout;
 }
 
 fn resolveOnPath(

@@ -102,15 +102,35 @@ fn paeth(a: u8, b: u8, cc: u8) u8 {
     return cc;
 }
 
-/// Minimal PNG decoder: accepts only the format `encode` produces (8-bit
-/// RGBA, non-interlaced). Used by the round-trip tests and by the editor
-/// when loading a saved capture.
+/// True when `bytes` contains a full PNG (signature through IEND).
+/// Used by the marquee to avoid treating in-progress Spectacle writes as permanent failures.
+pub fn looksComplete(bytes: []const u8) bool {
+    const sig = "\x89PNG\r\n\x1a\n";
+    if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..8], sig)) return false;
+    var pos: usize = 8;
+    while (pos + 12 <= bytes.len) {
+        const len = std.mem.readInt(u32, bytes[pos..][0..4], .big);
+        const ctype = bytes[pos + 4 ..][0..4];
+        pos += 8;
+        if (pos + len + 4 > bytes.len) return false;
+        pos += len + 4;
+        if (std.mem.eql(u8, ctype, "IEND")) return true;
+    }
+    return false;
+}
+
+/// Decode common 8-bit non-interlaced PNGs to RGBA.
+/// Supports color type 2 (RGB) and 6 (RGBA), all five scanline filters, and
+/// multi-chunk IDAT (as produced by Spectacle, libpng, etc.).
 pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, out_w: *u32, out_h: *u32) ![]u8 {
     const sig = "\x89PNG\r\n\x1a\n";
     if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..8], sig)) return error.DecodeFailed;
 
     var w: u32 = 0;
     var h: u32 = 0;
+    var bit_depth: u8 = 0;
+    var color_type: u8 = 0;
+    var interlace: u8 = 0;
     var saw_ihdr = false;
     var idat: std.array_list.Managed(u8) = .init(allocator);
     defer idat.deinit();
@@ -127,59 +147,116 @@ pub fn decode(allocator: std.mem.Allocator, bytes: []const u8, out_w: *u32, out_
             if (len != 13) return error.DecodeFailed;
             w = std.mem.readInt(u32, data[0..4], .big);
             h = std.mem.readInt(u32, data[4..8], .big);
-            // bit depth 8, color type 6 (RGBA), no interlace.
-            if (data[8] != 8 or data[9] != 6 or data[12] != 0) return error.UnsupportedFormat;
+            bit_depth = data[8];
+            color_type = data[9];
+            // compression method must be 0 (deflate), filter method 0.
+            if (data[10] != 0 or data[11] != 0) return error.UnsupportedFormat;
+            interlace = data[12];
             saw_ihdr = true;
         } else if (std.mem.eql(u8, ctype, "IDAT")) {
             try idat.appendSlice(data);
         } else if (std.mem.eql(u8, ctype, "IEND")) {
             break;
         }
+        // pHYs, tEXt, etc. ignored
     }
     if (!saw_ihdr or w == 0 or h == 0) return error.DecodeFailed;
+    if (bit_depth != 8 or interlace != 0) return error.UnsupportedFormat;
+    // 2 = RGB, 6 = RGBA. Palette/grayscale left for a later pass.
+    if (color_type != 2 and color_type != 6) return error.UnsupportedFormat;
+    if (idat.items.len == 0) return error.DecodeFailed;
 
+    const bpp: usize = if (color_type == 6) 4 else 3;
     const width: usize = w;
     const height: usize = h;
-    const rowbytes = width * 4;
-    const raw = try allocator.alloc(u8, height * (rowbytes + 1));
+    const rowbytes = width * bpp;
+    const expected_raw = height * (rowbytes + 1);
+
+    const raw = try inflateZlib(allocator, idat.items, expected_raw);
     defer allocator.free(raw);
 
-    var input: std.Io.Reader = .fixed(idat.items);
-    var window: [std.compress.flate.max_window_len]u8 = undefined;
-    var decomp: std.compress.flate.Decompress = .init(&input, .zlib, &window);
-    decomp.reader.readSliceAll(raw) catch return error.DecodeFailed;
+    // Unfilter into channel buffer (RGB or RGBA).
+    const channels = try allocator.alloc(u8, width * height * bpp);
+    defer allocator.free(channels);
+    for (0..height) |y| {
+        const filter = raw[y * (rowbytes + 1)];
+        const scan = raw[y * (rowbytes + 1) + 1 ..][0..rowbytes];
+        const recon = channels[y * rowbytes ..][0..rowbytes];
+        const prior: ?[]const u8 = if (y == 0) null else channels[(y - 1) * rowbytes ..][0..rowbytes];
+        try unfilter(filter, scan, recon, prior, bpp);
+    }
 
+    // Expand RGB to RGBA if needed.
     const out = try allocator.alloc(u8, width * height * 4);
     errdefer allocator.free(out);
-    for (0..height) |y| {
-        const scan = raw[y * (rowbytes + 1) + 1 ..][0..rowbytes];
-        const recon = out[y * rowbytes ..][0..rowbytes];
-        const prior: ?[]const u8 = if (y == 0) null else out[(y - 1) * rowbytes ..][0..rowbytes];
-        switch (raw[y * (rowbytes + 1)]) {
-            0 => @memcpy(recon, scan),
-            1 => for (scan, 0..) |s, i| {
-                const left: u8 = if (i >= 4) recon[i - 4] else 0;
-                recon[i] = s +% left;
-            },
-            2 => for (scan, 0..) |s, i| {
-                const up: u8 = if (prior) |p| p[i] else 0;
-                recon[i] = s +% up;
-            },
-            3 => for (scan, 0..) |s, i| {
-                const left: u8 = if (i >= 4) recon[i - 4] else 0;
-                const up: u8 = if (prior) |p| p[i] else 0;
-                recon[i] = s +% @as(u8, @intCast((@as(u16, left) + up) / 2));
-            },
-            4 => for (scan, 0..) |s, i| {
-                const a: u8 = if (i >= 4) recon[i - 4] else 0;
-                const b: u8 = if (prior) |p| p[i] else 0;
-                const cc: u8 = if (i >= 4 and prior != null) prior.?[i - 4] else 0;
-                recon[i] = s +% paeth(a, b, cc);
-            },
-            else => return error.DecodeFailed,
+    if (color_type == 6) {
+        @memcpy(out, channels);
+    } else {
+        var i: usize = 0;
+        var o: usize = 0;
+        while (i < channels.len) : ({
+            i += 3;
+            o += 4;
+        }) {
+            out[o + 0] = channels[i + 0];
+            out[o + 1] = channels[i + 1];
+            out[o + 2] = channels[i + 2];
+            out[o + 3] = 255;
         }
     }
     out_w.* = w;
     out_h.* = h;
     return out;
+}
+
+fn unfilter(
+    filter: u8,
+    scan: []const u8,
+    recon: []u8,
+    prior: ?[]const u8,
+    bpp: usize,
+) !void {
+    switch (filter) {
+        0 => @memcpy(recon, scan),
+        1 => for (scan, 0..) |s, i| {
+            const left: u8 = if (i >= bpp) recon[i - bpp] else 0;
+            recon[i] = s +% left;
+        },
+        2 => for (scan, 0..) |s, i| {
+            const up: u8 = if (prior) |p| p[i] else 0;
+            recon[i] = s +% up;
+        },
+        3 => for (scan, 0..) |s, i| {
+            const left: u8 = if (i >= bpp) recon[i - bpp] else 0;
+            const up: u8 = if (prior) |p| p[i] else 0;
+            recon[i] = s +% @as(u8, @intCast((@as(u16, left) + up) / 2));
+        },
+        4 => for (scan, 0..) |s, i| {
+            const a: u8 = if (i >= bpp) recon[i - bpp] else 0;
+            const b: u8 = if (prior) |p| p[i] else 0;
+            const cc: u8 = if (i >= bpp and prior != null) prior.?[i - bpp] else 0;
+            recon[i] = s +% paeth(a, b, cc);
+        },
+        else => return error.DecodeFailed,
+    }
+}
+
+/// Inflate a zlib-wrapped deflate stream into at least `expected` bytes.
+fn inflateZlib(allocator: std.mem.Allocator, zlib_bytes: []const u8, expected: usize) ![]u8 {
+    if (zlib_bytes.len < 2) return error.InflateFailed;
+
+    var input: std.Io.Reader = .fixed(zlib_bytes);
+    // Sliding window required for match back-references in real libpng streams.
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var decomp: std.compress.flate.Decompress = .init(&input, .zlib, &window);
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    // Pre-size for expected raw scanlines to avoid many reallocs on dual-monitor captures.
+    try aw.ensureTotalCapacity(expected);
+    _ = decomp.reader.streamRemaining(&aw.writer) catch |e| switch (e) {
+        error.ReadFailed => return error.InflateFailed,
+        error.WriteFailed => return error.OutOfMemory,
+    };
+    if (aw.written().len < expected) return error.InflateShort;
+    return try aw.toOwnedSlice();
 }

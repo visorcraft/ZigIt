@@ -16,6 +16,8 @@ const toast_mod = @import("toast");
 const compositor = @import("compositor");
 const config_mod = @import("config");
 const theme_mod = @import("theme");
+const instance_mod = @import("instance");
+const tray_mod = @import("tray");
 
 /// Editable form buffers for the Settings tab. Mirrors Config fields.
 const SettingsForm = struct {
@@ -23,6 +25,8 @@ const SettingsForm = struct {
     hotkey_len: usize = 0,
     save_dir: [512]u8 = undefined,
     save_dir_len: usize = 0,
+    /// 0=region, 1=fullscreen, 2=window
+    capture_mode_idx: c_int = 0,
     marquee_idx: c_int = 0,
     theme_idx: c_int = 0,
     color: [4]f32 = .{ 1.0, 0.23, 0.19, 1.0 },
@@ -39,6 +43,11 @@ const SettingsForm = struct {
     fn fromConfig(self: *SettingsForm, cfg: config_mod.Config) void {
         self.setBuf(&self.hotkey, &self.hotkey_len, cfg.hotkey);
         self.setBuf(&self.save_dir, &self.save_dir_len, cfg.save_dir);
+        self.capture_mode_idx = switch (cfg.capture_mode) {
+            .region => 0,
+            .fullscreen => 1,
+            .window => 2,
+        };
         self.marquee_idx = switch (cfg.marquee_position) {
             .top_right => 0,
             .top_left => 1,
@@ -90,6 +99,11 @@ const SettingsForm = struct {
         else
             try allocator.dupe(u8, self.save_dir[0..self.save_dir_len]);
         errdefer if (save_dir.len > 0) allocator.free(save_dir);
+        const capture_mode: config_mod.CaptureMode = switch (self.capture_mode_idx) {
+            1 => .fullscreen,
+            2 => .window,
+            else => .region,
+        };
         const marquee: config_mod.MarqueePosition = switch (self.marquee_idx) {
             1 => .top_left,
             2 => .bottom_right,
@@ -106,6 +120,7 @@ const SettingsForm = struct {
         return .{
             .save_dir = save_dir,
             .hotkey = hotkey,
+            .capture_mode = capture_mode,
             .marquee_position = marquee,
             .theme = theme,
             .default_color_rgba = rgba,
@@ -116,8 +131,21 @@ const SettingsForm = struct {
 
 pub const Ui = struct {
     pub fn run(allocator: std.mem.Allocator) !void {
+        // Single instance: second launch raises the existing daemon and exits.
+        const acquired = try instance_mod.Instance.acquire(allocator);
+        var inst = acquired[0];
+        const role = acquired[1];
+        if (role == .secondary_shown) {
+            inst.deinit();
+            return;
+        }
+        defer inst.deinit();
+
         // Icons + desktop entry for Wayland titlebar/taskbar (app_id lookup).
         app_icon.installUserChrome(allocator);
+
+        var tray = tray_mod.Tray.init();
+        defer tray.deinit();
 
         if (c.glfwInit() == 0) return error.GlfwInitFailed;
         defer c.glfwTerminate();
@@ -131,6 +159,12 @@ pub const Ui = struct {
         app_icon.setWindowIcon(c, w);
         c.glfwMakeContextCurrent(w);
         c.glfwSwapInterval(1);
+
+        // Close / minimize → hide to tray (do not quit). Quit only via tray menu.
+        // On Wayland, glfwHideWindow destroys the xdg_toplevel so the taskbar
+        // entry goes away; iconify alone would leave a minimized task.
+        _ = c.glfwSetWindowCloseCallback(w, onWindowClose);
+        _ = c.glfwSetWindowIconifyCallback(w, onWindowIconify);
 
         const ctx = c.igCreateContext(null);
         defer c.igDestroyContext(ctx);
@@ -167,13 +201,62 @@ pub const Ui = struct {
         if (detected == .unknown) {
             toast.show(.warn, "Unknown compositor: open Settings to bind a hotkey manually.") catch {};
         }
+        // Plasma Wayland: SSD minimize never reaches GLFW — KWin script rewrites
+        // it as a close request so hideToTray can drop the taskbar entry.
+        if (detected == .kde) {
+            compositor.installKdeMinimizeToTrayHook(allocator);
+        }
+        if (tray.ok()) {
+            toast.show(.info, "ZigIt is running in the system tray") catch {};
+        }
 
         var applied_theme = cfg.theme;
         var kde_shortcuts_blocked = false;
         defer if (kde_shortcuts_blocked) compositor.setKdeShortcutsBlocked(allocator, false) catch {};
 
-        while (c.glfwWindowShouldClose(w) == 0) {
-            c.glfwPollEvents();
+        // After tray/socket Show, ignore close/Escape for a few frames so a
+        // lingering key/compositor event cannot immediately re-hide the window.
+        var show_grace_frames: i32 = 0;
+
+        var running = true;
+        while (running) {
+            // Pump GTK and apply tray/socket actions before any hide/wait logic.
+            if (processTrayAndInstance(&tray, &inst, w, allocator, &toast, &show_grace_frames)) {
+                running = false;
+                break;
+            }
+
+            // Close requested (titlebar X) → unmap to tray (drops taskbar entry).
+            if (show_grace_frames <= 0 and c.glfwWindowShouldClose(w) != 0) {
+                c.glfwSetWindowShouldClose(w, c.GLFW_FALSE);
+                hideToTray(w);
+            } else if (c.glfwWindowShouldClose(w) != 0) {
+                // Swallow close while raising from tray.
+                c.glfwSetWindowShouldClose(w, c.GLFW_FALSE);
+            }
+
+            // When hidden: tray-only mode. Wait on GLib/DBus (not GLFW) so the
+            // StatusNotifier menu AboutToShow/activate handshakes stay responsive.
+            // Do not run ImGui/GL/Swap while unmapped.
+            if (c.glfwGetWindowAttrib(w, c.GLFW_VISIBLE) == 0) {
+                tray.wait(100);
+                // Non-blocking GLFW pump (no long sleep — that starved DBus).
+                c.glfwPollEvents();
+                // Apply tray actions immediately after GLib wake.
+                if (processTrayAndInstance(&tray, &inst, w, allocator, &toast, &show_grace_frames)) {
+                    running = false;
+                    break;
+                }
+                if (show_grace_frames > 0) show_grace_frames -= 1;
+                // Still hidden: stay tray-only (no framebuffer commit).
+                if (c.glfwGetWindowAttrib(w, c.GLFW_VISIBLE) == 0) continue;
+                // Just raised from tray — fall through and draw once so Wayland maps.
+            } else {
+                c.glfwPollEvents();
+                // Keep DBusMenu warm while the main window is open too.
+                tray.poll();
+            }
+            if (show_grace_frames > 0) show_grace_frames -= 1;
             const recording_before_frame = form.recording_hotkey;
             try marquee.poll();
             c.cImGui_ImplOpenGL3_NewFrame();
@@ -269,11 +352,74 @@ pub const Ui = struct {
             c.glClear(c.GL_COLOR_BUFFER_BIT);
             c.cImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
             c.glfwSwapBuffers(w);
-            if (!recording_before_frame and !form.recording_hotkey and
-                c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) break;
+            // Escape hides to tray (unless recording a hotkey or just raised).
+            if (show_grace_frames <= 0 and !recording_before_frame and !form.recording_hotkey and
+                c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false))
+            {
+                hideToTray(w);
+            }
         }
     }
 };
+
+/// Poll tray + single-instance socket. Returns true if the daemon should quit.
+fn processTrayAndInstance(
+    tray: *tray_mod.Tray,
+    inst: *instance_mod.Instance,
+    window: ?*c.GLFWwindow,
+    allocator: std.mem.Allocator,
+    toast: *toast_mod.Toast,
+    show_grace_frames: *i32,
+) bool {
+    tray.poll();
+    if (tray.takeShow() or inst.poll() == .show) {
+        showWindow(window);
+        // Wayland only maps the surface after a framebuffer update; also
+        // ignore hide/close for a few frames so raise sticks.
+        show_grace_frames.* = 15;
+    }
+    if (tray.takeQuit()) return true;
+    if (tray.takeCaptureRegion()) {
+        spawnCapture(allocator, &.{ "zigit", "capture" }, toast);
+    }
+    if (tray.takeCaptureWindow()) {
+        spawnCapture(allocator, &.{ "zigit", "capture", "--window" }, toast);
+    }
+    return false;
+}
+
+fn onWindowClose(window: ?*c.GLFWwindow) callconv(.c) void {
+    // Convert close into hide; the main loop clears should_close and hides.
+    if (window) |win| c.glfwSetWindowShouldClose(win, c.GLFW_TRUE);
+}
+
+fn onWindowIconify(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c) void {
+    // X11/XWayland: iconify callback fires for minimize → tray-hide.
+    // Pure Wayland (esp. KDE SSD): this never runs; KWin script handles it.
+    if (iconified != 0) hideToTray(window);
+}
+
+/// Unmap the window completely (no taskbar entry). Prefer this over iconify.
+fn hideToTray(window: ?*c.GLFWwindow) void {
+    if (window) |win| {
+        c.glfwSetWindowShouldClose(win, c.GLFW_FALSE);
+        c.glfwHideWindow(win);
+    }
+}
+
+fn showWindow(window: ?*c.GLFWwindow) void {
+    if (window) |win| {
+        c.glfwSetWindowShouldClose(win, c.GLFW_FALSE);
+        // Iconified (minimized) is a different state from hidden.
+        if (c.glfwGetWindowAttrib(win, c.GLFW_ICONIFIED) != 0) {
+            c.glfwRestoreWindow(win);
+        }
+        c.glfwShowWindow(win);
+        // Best-effort raise; Wayland may ignore focus without an activation token.
+        c.glfwFocusWindow(win);
+        c.glfwRequestWindowAttention(win);
+    }
+}
 
 const label_col_w: f32 = 150.0;
 
@@ -352,6 +498,17 @@ fn drawSettings(
     }
     c.igIndent(label_col_w);
     c.igTextDisabled("Click Record, then press the keys you want. Esc cancels. Clear sets Print without pressing the key.");
+    c.igUnindent(label_col_w);
+
+    formRowStart("Hotkey capture");
+    c.igSetNextItemWidth(220);
+    const capture_modes = "region\x00fullscreen\x00window\x00";
+    if (c.igCombo_Str("##capture_mode", &form.capture_mode_idx, capture_modes, -1)) {
+        form.dirty = true;
+        changed = true;
+    }
+    c.igIndent(label_col_w);
+    c.igTextDisabled("What Print (or your hotkey) captures. Re-install the binding after changing.");
     c.igUnindent(label_col_w);
 
     formRowStart("Save directory");
@@ -479,16 +636,17 @@ fn drawSettings(
     c.igSpacing();
 
     // ── Save / reset ────────────────────────────────────────────
-    if (form.dirty) {
-        theme_mod.pushAccent();
-    }
+    // Snapshot dirty before the button: savePrefs clears form.dirty, and we
+    // must still PopStyleColor for the accent push on this frame.
+    const save_accent = form.dirty;
+    if (save_accent) theme_mod.pushAccent();
     if (c.igButton("Save preferences", .{ .x = 168, .y = 36 })) {
         savePrefs(allocator, form, cfg, cfg_path, toast) catch |e| {
             form.setStatus(@errorName(e), true);
             toast.show(.@"error", "Could not save preferences") catch {};
         };
     }
-    if (form.dirty) theme_mod.popAccent();
+    if (save_accent) theme_mod.popAccent();
 
     c.igSameLine(0.0, 10.0);
     theme_mod.pushGhost();
@@ -529,10 +687,13 @@ fn drawAbout(
     c.igSpacing();
 
     theme_mod.sectionHeader("How to capture");
-    c.igBulletText("Press your hotkey (default: Print Screen)");
+    c.igBulletText("Press your hotkey (default: Print Screen → region select)");
     c.igBulletText("Or use Capture region / Capture window on the Captures tab");
     c.igBulletText("PNG is saved and copied to the clipboard automatically");
     c.igBulletText("The editor opens so you can annotate immediately");
+    c.igSpacing();
+    c.igTextDisabled("Capture: grim+slurp / wlr on Hyprland/Sway; Spectacle on KDE");
+    c.igTextDisabled("(portal only if Spectacle is not installed).");
 
     theme_mod.sectionHeader("Paths");
     formRowStart("Captures");
@@ -545,7 +706,7 @@ fn drawAbout(
     c.igText("%s", compositorNameZ(detected));
 
     theme_mod.sectionHeader("CLI");
-    c.igTextDisabled("zigit daemon            this window + capture history");
+    c.igTextDisabled("zigit daemon            tray daemon (single instance)");
     c.igTextDisabled("zigit capture           interactive region capture");
     c.igTextDisabled("zigit capture --window  active window capture");
     c.igTextDisabled("zigit edit <path>       open editor");
@@ -859,7 +1020,12 @@ fn installBinding(
     const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.NoHome;
     const exe = try std.process.executablePathAlloc(app_io.get(), allocator);
     defer allocator.free(exe);
-    const action = try std.fmt.allocPrint(allocator, "\"{s}\" capture --overlay", .{exe});
+    const mode: config_mod.CaptureMode = switch (form.capture_mode_idx) {
+        1 => .fullscreen,
+        2 => .window,
+        else => .region,
+    };
+    const action = try config_mod.formatCaptureAction(allocator, exe, mode);
     defer allocator.free(action);
     const maybe_owner = if (detected == .kde)
         try compositor.kdeShortcutOwner(allocator, hotkey)

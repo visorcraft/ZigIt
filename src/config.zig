@@ -3,10 +3,14 @@ const app_io = @import("app_io");
 
 pub const Theme = enum { dark, light };
 pub const MarqueePosition = enum { top_right, top_left, bottom_right, bottom_left };
+/// What the compositor hotkey runs. Default is region (drag-to-select).
+pub const CaptureMode = enum { region, fullscreen, window };
 
 pub const Config = struct {
     save_dir: []const u8,
     hotkey: []const u8,
+    /// Capture mode used when the hotkey binding is installed.
+    capture_mode: CaptureMode,
     marquee_position: MarqueePosition,
     theme: Theme,
     default_color_rgba: [4]u8,
@@ -18,6 +22,7 @@ pub const Config = struct {
         return .{
             .save_dir = "", // empty → storage.captureDir resolves to ~/screenshots
             .hotkey = "Print",
+            .capture_mode = .region,
             .marquee_position = .top_right,
             .theme = .dark,
             .default_color_rgba = .{ 0xff, 0x3b, 0x30, 0xff },
@@ -73,6 +78,8 @@ pub const Config = struct {
                 } else if (std.mem.eql(u8, key, "save_dir")) {
                     if (c.save_dir.len > 0) allocator.free(c.save_dir);
                     c.save_dir = if (value.len > 0) try allocator.dupe(u8, value) else "";
+                } else if (std.mem.eql(u8, key, "capture_mode")) {
+                    c.capture_mode = parseCaptureMode(value) orelse c.capture_mode;
                 } else if (std.mem.eql(u8, key, "marquee_position")) {
                     c.marquee_position = parseMarqueePosition(value) orelse c.marquee_position;
                 } else if (std.mem.eql(u8, key, "theme")) {
@@ -97,6 +104,7 @@ pub const Config = struct {
         try w.writeAll("# ZigIt preferences: edit here or via the Settings tab in the daemon.\n");
         try w.print("save_dir = \"{s}\"\n", .{self.save_dir});
         try w.print("hotkey = \"{s}\"\n", .{self.hotkey});
+        try w.print("capture_mode = \"{s}\"\n", .{captureModeName(self.capture_mode)});
         try w.print("marquee_position = \"{s}\"\n", .{marqueePositionName(self.marquee_position)});
         try w.print("theme = \"{s}\"\n", .{themeName(self.theme)});
         try w.print("default_color = \"#{x:0>2}{x:0>2}{x:0>2}\"\n", .{
@@ -126,6 +134,24 @@ pub fn themeName(t: Theme) []const u8 {
     };
 }
 
+pub fn captureModeName(m: CaptureMode) []const u8 {
+    return switch (m) {
+        .region => "region",
+        .fullscreen => "fullscreen",
+        .window => "window",
+    };
+}
+
+/// Build the shell action string installed as the compositor hotkey.
+/// Caller owns the returned slice.
+pub fn formatCaptureAction(allocator: std.mem.Allocator, exe: []const u8, mode: CaptureMode) ![]u8 {
+    return switch (mode) {
+        .region => std.fmt.allocPrint(allocator, "\"{s}\" capture", .{exe}),
+        .fullscreen => std.fmt.allocPrint(allocator, "\"{s}\" capture --overlay", .{exe}),
+        .window => std.fmt.allocPrint(allocator, "\"{s}\" capture --window", .{exe}),
+    };
+}
+
 pub fn marqueePositionName(p: MarqueePosition) []const u8 {
     return switch (p) {
         .top_right => "top-right",
@@ -138,6 +164,13 @@ pub fn marqueePositionName(p: MarqueePosition) []const u8 {
 fn parseTheme(s: []const u8) ?Theme {
     if (std.mem.eql(u8, s, "dark")) return .dark;
     if (std.mem.eql(u8, s, "light")) return .light;
+    return null;
+}
+
+fn parseCaptureMode(s: []const u8) ?CaptureMode {
+    if (std.mem.eql(u8, s, "region")) return .region;
+    if (std.mem.eql(u8, s, "fullscreen") or std.mem.eql(u8, s, "full") or std.mem.eql(u8, s, "overlay")) return .fullscreen;
+    if (std.mem.eql(u8, s, "window")) return .window;
     return null;
 }
 

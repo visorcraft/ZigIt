@@ -35,8 +35,11 @@ pub const Marquee = struct {
         texture: c_uint = 0,
         width: u32 = 0,
         height: u32 = 0,
-        // Decode/upload already failed once; do not retry every frame.
+        // Permanent failure after a complete PNG failed to decode. Incomplete
+        // (still-writing) files are retried until IEND appears or this is set.
         broken: bool = false,
+        // Last byte size we logged a permanent failure for (avoid spam).
+        logged_fail_size: u64 = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator, dir: []const u8) !Marquee {
@@ -75,9 +78,17 @@ pub const Marquee = struct {
     pub fn poll(self: *Marquee) !void {
         while (try self.watch.tryRead()) |ev| {
             switch (ev) {
+                // CREATE/MOVED_TO often fire before Spectacle finishes the write;
+                // refresh adds the path and ensureTexture retries until complete.
                 .created => try self.refresh(),
                 .deleted => try self.refresh(),
-                .modified => {},
+                // MODIFY while writing: clear permanent-fail so a prior partial
+                // read does not stick once the file grows.
+                .modified => {
+                    for (self.thumbnails.items) |*t| {
+                        if (t.texture == 0) t.broken = false;
+                    }
+                },
             }
         }
     }
@@ -130,20 +141,29 @@ pub const Marquee = struct {
     }
 
     // Lazily decode the PNG and upload it as a GL texture on first draw.
-    // Failures mark the entry broken and are logged once; the frame loop keeps
-    // running and the entry is skipped.
+    // Incomplete files (Spectacle still writing) are skipped quietly and
+    // retried on later frames; only complete-file failures stick as broken.
     fn ensureTexture(self: *Marquee, t: *Thumbnail) void {
         if (t.texture != 0 or t.broken) return;
-        const bytes = std.Io.Dir.cwd().readFileAlloc(app_io.get(), t.path, self.allocator, .limited(32 * 1024 * 1024)) catch |e| {
-            std.debug.print("zigit: marquee: cannot read {s}: {s}\n", .{ t.path, @errorName(e) });
-            t.broken = true;
+        // Dual-monitor RGBA PNGs compress to several MB; allow a generous cap.
+        // Absolute paths are accepted by cwd().readFileAlloc (Dir handle ignored).
+        const bytes = std.Io.Dir.cwd().readFileAlloc(app_io.get(), t.path, self.allocator, .limited(256 * 1024 * 1024)) catch {
+            // File may have been deleted mid-frame; refresh will drop it.
             return;
         };
         defer self.allocator.free(bytes);
+
+        // Race: inotify CREATE often lands before the last IDAT/IEND is flushed.
+        if (!png.looksComplete(bytes)) return;
+
         var w: u32 = 0;
         var h: u32 = 0;
         const px = png.decode(self.allocator, bytes, &w, &h) catch |e| {
-            std.debug.print("zigit: marquee: cannot decode {s}: {s}\n", .{ t.path, @errorName(e) });
+            const sz: u64 = bytes.len;
+            if (t.logged_fail_size != sz) {
+                std.debug.print("zigit: marquee: cannot decode {s} ({d}B): {s}\n", .{ t.path, bytes.len, @errorName(e) });
+                t.logged_fail_size = sz;
+            }
             t.broken = true;
             return;
         };
@@ -174,10 +194,14 @@ pub const Marquee = struct {
             return;
         }
 
-        const card_h: f32 = 150.0;
+        // Tight card chrome so thumbs fill the box; height sized so thumb +
+        // filename fit without a vertical scrollbar (global WindowPadding is 20).
         const card_w: f32 = 200.0;
-        const thumb_max_w: f32 = 180.0;
-        const thumb_max_h: f32 = 110.0;
+        const card_pad: f32 = 6.0;
+        const thumb_max_w: f32 = card_w - card_pad * 2.0 - 2.0;
+        const thumb_max_h: f32 = 152.0;
+        // pad*2 + frame pad + thumb + item gap + filename line + a little slack
+        const card_h: f32 = card_pad * 2.0 + 4.0 + thumb_max_h + 6.0 + 20.0 + 4.0; // ~192
 
         for (self.thumbnails.items, 0..) |*t, i| {
             if (i > 0) c.igSameLine(0.0, 12.0);
@@ -191,7 +215,16 @@ pub const Marquee = struct {
             const frame_bg: c.ImVec4 = style.Colors[7];
             c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, frame_bg);
             c.igPushStyleVar_Float(c.ImGuiStyleVar_ChildRounding, 8.0);
-            _ = c.igBeginChild_Str(id_z.ptr, .{ .x = card_w, .y = card_h }, c.ImGuiChildFlags_Borders, 0);
+            c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, .{ .x = card_pad, .y = card_pad });
+            c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, .{ .x = 2.0, .y = 2.0 });
+            c.igPushStyleVar_Vec2(c.ImGuiStyleVar_ItemSpacing, .{ .x = 4.0, .y = 6.0 });
+            // NoScrollbar: content is laid out to fit; avoid per-card vertical bars.
+            _ = c.igBeginChild_Str(
+                id_z.ptr,
+                .{ .x = card_w, .y = card_h },
+                c.ImGuiChildFlags_Borders,
+                c.ImGuiWindowFlags_NoScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse,
+            );
 
             self.ensureTexture(t);
             if (t.texture != 0 and t.width > 0 and t.height > 0) {
@@ -200,8 +233,8 @@ pub const Marquee = struct {
                     .x = @floor(@as(f32, @floatFromInt(t.width)) * scale),
                     .y = @floor(@as(f32, @floatFromInt(t.height)) * scale),
                 };
-                // Center thumbnail in card.
-                const pad_x = @max(0, (card_w - 16.0 - size.x) * 0.5);
+                // Center thumbnail using the card's content width (tight pad).
+                const pad_x = @max(0, (thumb_max_w - size.x) * 0.5);
                 if (pad_x > 0) c.igSetCursorPosX(c.igGetCursorPosX() + pad_x);
 
                 var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -255,8 +288,10 @@ pub const Marquee = struct {
                     }
                     c.igEndPopup();
                 }
-            } else {
+            } else if (t.broken) {
                 c.igTextDisabled("(broken)");
+            } else {
+                c.igTextDisabled("(loading…)");
             }
 
             const name = std.fs.path.basename(t.path);
@@ -268,7 +303,7 @@ pub const Marquee = struct {
             c.igTextDisabled("%s", nbuf[0..m :0].ptr);
 
             c.igEndChild();
-            c.igPopStyleVar(1);
+            c.igPopStyleVar(4); // ItemSpacing, FramePadding, WindowPadding, ChildRounding
             c.igPopStyleColor(1);
         }
     }

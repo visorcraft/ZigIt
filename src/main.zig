@@ -4,8 +4,9 @@ const ui = @import("ui");
 const overlay = @import("overlay");
 const setup = @import("setup");
 const editor_window = @import("editor_window");
+const png = @import("png");
 
-pub const version = "0.1.1";
+pub const version = "0.2.0";
 
 pub fn main(init: std.process.Init) !void {
     app_io.set(init.io);
@@ -26,7 +27,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
     if (args.len < 2) {
-        std.debug.print("usage: zigit <daemon|capture|edit|setup>\n", .{});
+        std.debug.print("usage: zigit <daemon|capture|edit|setup|decode>\n", .{});
         std.process.exit(2);
     }
     if (std.mem.eql(u8, args[1], "daemon")) {
@@ -38,6 +39,23 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, args[1], "edit")) {
         if (args.len < 3) return error.MissingPath;
         try editor_window.EditorWindow.run(allocator, args[2]);
+    } else if (std.mem.eql(u8, args[1], "decode")) {
+        // Smoke-check PNG decode without starting the UI (marquee path).
+        if (args.len < 3) {
+            std.debug.print("usage: zigit decode PATH\n", .{});
+            std.process.exit(2);
+        }
+        const path = args[2];
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), path, allocator, .limited(256 * 1024 * 1024));
+        defer allocator.free(bytes);
+        var w: u32 = 0;
+        var h: u32 = 0;
+        const px = png.decode(allocator, bytes, &w, &h) catch |e| {
+            std.debug.print("zigit: decode failed {s} ({d}B): {s}\n", .{ path, bytes.len, @errorName(e) });
+            std.process.exit(1);
+        };
+        defer allocator.free(px);
+        std.debug.print("ok {s} {d}x{d} rgba={d}\n", .{ path, w, h, px.len });
     } else {
         std.debug.print("zigit: unknown subcommand {s}\n", .{args[1]});
         std.process.exit(2);

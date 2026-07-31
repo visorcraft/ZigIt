@@ -131,7 +131,8 @@ pub fn apply(theme: config.Theme) void {
     style.*.ItemSpacing = .{ .x = 12.0, .y = 10.0 };
     style.*.ItemInnerSpacing = .{ .x = 10.0, .y = 6.0 };
     style.*.IndentSpacing = 20.0;
-    style.*.ScrollbarSize = 10.0;
+    // Horizontal strip scrollbars (captures marquee, etc.) need a chunky grab.
+    style.*.ScrollbarSize = 20.0;
     style.*.GrabMinSize = 12.0;
     style.*.WindowTitleAlign = .{ .x = 0.0, .y = 0.5 };
     style.*.ButtonTextAlign = .{ .x = 0.5, .y = 0.5 };

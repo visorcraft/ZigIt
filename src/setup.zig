@@ -56,7 +56,7 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     defer cfg.deinit(allocator);
     const exe = try std.process.executablePathAlloc(app_io.get(), allocator);
     defer allocator.free(exe);
-    const action = try std.fmt.allocPrint(allocator, "\"{s}\" capture --overlay", .{exe});
+    const action = try config.formatCaptureAction(allocator, exe, cfg.capture_mode);
     defer allocator.free(action);
     const maybe_owner = if (kind == .kde)
         try compositor.kdeShortcutOwner(allocator, cfg.hotkey)

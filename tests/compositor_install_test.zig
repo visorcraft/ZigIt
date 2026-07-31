@@ -93,14 +93,30 @@ test "kde install writes one service shortcut and launcher" {
 
     const content = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), b2.snippetPath, testing.allocator, .limited(1 << 22));
     defer testing.allocator.free(content);
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, "[services][com.visorcraft.zigit.desktop]"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, "[services][com.visorcraft.zigit.capture.desktop]"));
     try testing.expect(std.mem.indexOf(u8, content, "_launch=Print") != null);
+    // Spectacle Print defaults are suppressed.
+    try testing.expect(std.mem.indexOf(u8, content, "[services][org.kde.spectacle.desktop]") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "FullScreenScreenShot=none") != null);
 
-    const desktop = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), home ++ "/.local/share/applications/com.visorcraft.zigit.desktop", testing.allocator, .limited(1 << 16));
+    const desktop = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), home ++ "/.local/share/applications/com.visorcraft.zigit.capture.desktop", testing.allocator, .limited(1 << 16));
     defer testing.allocator.free(desktop);
     try testing.expect(std.mem.indexOf(u8, desktop, "Exec=zigit capture --overlay") != null);
     try testing.expect(std.mem.indexOf(u8, desktop, "X-KDE-Shortcuts=Print") != null);
     try testing.expect(std.mem.indexOf(u8, desktop, "Icon=com.visorcraft.zigit") != null);
+    try testing.expect(std.mem.indexOf(u8, desktop, "NoDisplay=true") != null);
+}
+
+test "formatCaptureAction region has no fullscreen flag" {
+    const cfg = @import("config");
+    const region = try cfg.formatCaptureAction(testing.allocator, "/usr/bin/zigit", .region);
+    defer testing.allocator.free(region);
+    try testing.expect(std.mem.indexOf(u8, region, "capture") != null);
+    try testing.expect(std.mem.indexOf(u8, region, "--overlay") == null);
+    try testing.expect(std.mem.indexOf(u8, region, "--fullscreen") == null);
+    const full = try cfg.formatCaptureAction(testing.allocator, "/usr/bin/zigit", .fullscreen);
+    defer testing.allocator.free(full);
+    try testing.expect(std.mem.indexOf(u8, full, "--overlay") != null);
 }
 
 test "install reads pre-existing config larger than 64 KiB" {

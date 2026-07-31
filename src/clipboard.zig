@@ -42,3 +42,32 @@ pub fn copyPNGToFile(allocator: std.mem.Allocator, path: []const u8) !void {
     defer allocator.free(bytes);
     try copyPNG(allocator, bytes);
 }
+
+/// Copy plain text to the clipboard via wl-copy (Wayland).
+pub fn copyText(allocator: std.mem.Allocator, text: []const u8) !void {
+    _ = allocator;
+    const io = app_io.get();
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "wl-copy", "--type", "text/plain" },
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch |e| switch (e) {
+        error.FileNotFound => return error.WlCopyMissing,
+        else => return e,
+    };
+    var write_failed = false;
+    if (child.stdin) |stdin| {
+        stdin.writeStreamingAll(io, text) catch {
+            write_failed = true;
+        };
+        stdin.close(io);
+        child.stdin = null;
+    }
+    const term = try child.wait(io);
+    if (write_failed) return error.WlCopyFailed;
+    switch (term) {
+        .exited => |code| if (code != 0) return error.WlCopyFailed,
+        else => return error.WlCopyFailed,
+    }
+}

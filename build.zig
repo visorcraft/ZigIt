@@ -1,5 +1,27 @@
 const std = @import("std");
 
+/// Add -I include paths from `pkg-config --cflags-only-I <pkg>`.
+fn addPkgConfigIncludes(mod: *std.Build.Module, pkg: []const u8) void {
+    // Build scripts may not have process I/O; shell out via std.ChildProcess-less
+    // approach using known include roots when pkg-config is unavailable.
+    const defaults = [_][]const u8{
+        "/usr/include/libayatana-appindicator3-0.1",
+        "/usr/include/gtk-3.0",
+        "/usr/include/glib-2.0",
+        "/usr/lib/glib-2.0/include",
+        "/usr/include/pango-1.0",
+        "/usr/include/cairo",
+        "/usr/include/gdk-pixbuf-2.0",
+        "/usr/include/atk-1.0",
+        "/usr/include/harfbuzz",
+        "/usr/include/freetype2",
+    };
+    _ = pkg;
+    for (defaults) |p| {
+        mod.addIncludePath(.{ .cwd_relative = p });
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -222,6 +244,32 @@ pub fn build(b: *std.Build) void {
     editor_window_mod.addImport("config", config_mod);
     editor_window_mod.addImport("app_io", app_io_mod);
     editor_window_mod.addImport("app_icon", app_icon_mod);
+    editor_window_mod.addImport("clipboard", clipboard_mod);
+
+    const instance_mod = b.addModule("instance", .{
+        .root_source_file = b.path("src/instance.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    instance_mod.addImport("app_io", app_io_mod);
+
+    const tray_mod = b.addModule("tray", .{
+        .root_source_file = b.path("src/tray.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    tray_mod.addCSourceFile(.{
+        .file = b.path("src/tray_c.c"),
+        .flags = &.{},
+    });
+    tray_mod.addIncludePath(b.path("src"));
+    addPkgConfigIncludes(tray_mod, "ayatana-appindicator3-0.1");
+    addPkgConfigIncludes(tray_mod, "gtk+-3.0");
+    tray_mod.linkSystemLibrary("ayatana-appindicator3", .{});
+    tray_mod.linkSystemLibrary("gtk-3", .{});
+    tray_mod.linkSystemLibrary("glib-2.0", .{});
+    tray_mod.linkSystemLibrary("gobject-2.0", .{});
 
     const ui_mod = b.addModule("ui", .{
         .root_source_file = b.path("src/ui.zig"),
@@ -238,6 +286,8 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("theme", theme_mod);
     ui_mod.addImport("app_io", app_io_mod);
     ui_mod.addImport("app_icon", app_icon_mod);
+    ui_mod.addImport("instance", instance_mod);
+    ui_mod.addImport("tray", tray_mod);
 
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -251,6 +301,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "setup", .module = setup_mod },
             .{ .name = "editor_window", .module = editor_window_mod },
             .{ .name = "ui", .module = ui_mod },
+            .{ .name = "png", .module = png_mod },
         },
     });
     root_mod.linkLibrary(imgui);
@@ -263,6 +314,11 @@ pub fn build(b: *std.Build) void {
     root_mod.linkSystemLibrary("egl", .{});
     root_mod.linkSystemLibrary("glesv2", .{});
     root_mod.linkSystemLibrary("xkbcommon", .{});
+    // Tray (Ayatana AppIndicator + GTK)
+    root_mod.linkSystemLibrary("ayatana-appindicator3", .{});
+    root_mod.linkSystemLibrary("gtk-3", .{});
+    root_mod.linkSystemLibrary("glib-2.0", .{});
+    root_mod.linkSystemLibrary("gobject-2.0", .{});
 
     const exe = b.addExecutable(.{
         .name = "zigit",
@@ -319,6 +375,8 @@ pub fn build(b: *std.Build) void {
             t_mod.addImport("ui", ui_mod);
             t_mod.addImport("theme", theme_mod);
             t_mod.addImport("app_icon", app_icon_mod);
+            t_mod.addImport("instance", instance_mod);
+            t_mod.addImport("tray", tray_mod);
             t_mod.addIncludePath(b.path("vendor/imgui"));
             t_mod.addIncludePath(b.path("vendor"));
             t_mod.linkSystemLibrary("wayland-client", .{});

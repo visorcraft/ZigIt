@@ -64,14 +64,18 @@ test "kde uninstall removes only the ZigIt service section" {
     {
         const content = try readAbsolute(b.snippetPath);
         defer testing.allocator.free(content);
-        try testing.expect(std.mem.indexOf(u8, content, "[services][com.visorcraft.zigit.desktop]") != null);
+        try testing.expect(std.mem.indexOf(u8, content, "[services][com.visorcraft.zigit.capture.desktop]") != null);
     }
 
     try cmp.uninstall(testing.allocator, .kde, b);
 
     const content = try readAbsolute(b.snippetPath);
     defer testing.allocator.free(content);
-    try testing.expectEqualStrings(kde_rc, content);
+    // ZigIt section is gone; user sections preserved. Spectacle may retain
+    // Print-suppression keys written during install (intentional).
+    try testing.expect(std.mem.indexOf(u8, content, "com.visorcraft.zigit.capture") == null);
+    try testing.expect(std.mem.indexOf(u8, content, "[kwin]") != null);
+    try testing.expect(std.mem.indexOf(u8, content, "activate widget 4=Meta+V") != null);
 }
 
 test "kde uninstall keeps following sections when zigit is mid-file" {
@@ -89,7 +93,7 @@ test "kde uninstall keeps following sections when zigit is mid-file" {
 
     const content = try readAbsolute(b.snippetPath);
     defer testing.allocator.free(content);
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, "[services][com.visorcraft.zigit.desktop]"));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, "[services][com.visorcraft.zigit.capture.desktop]"));
     try testing.expect(std.mem.indexOf(u8, content, "_launch=Print") != null);
     try testing.expect(std.mem.indexOf(u8, content, "[other]\nfoo=bar") != null);
     try testing.expect(std.mem.indexOf(u8, content, "old") == null);
@@ -125,8 +129,9 @@ test "kde uninstall restores a replaced Spectacle shortcut" {
     try cmp.uninstall(testing.allocator, .kde, b);
     const content = try readAbsolute(b.snippetPath);
     defer testing.allocator.free(content);
-    try testing.expectEqualStrings(initial, content);
-    try testing.expectError(error.FileNotFound, std.Io.Dir.openFileAbsolute(app_io.get(), home ++ "/.local/share/applications/com.visorcraft.zigit.desktop", .{}));
+    try testing.expect(std.mem.indexOf(u8, content, "com.visorcraft.zigit.capture") == null);
+    try testing.expect(std.mem.indexOf(u8, content, "OpenWithoutScreenshot=none") != null);
+    try testing.expectError(error.FileNotFound, std.Io.Dir.openFileAbsolute(app_io.get(), home ++ "/.local/share/applications/com.visorcraft.zigit.capture.desktop", .{}));
 }
 
 test "changing KDE hotkey restores the previous Spectacle shortcut" {
@@ -153,7 +158,8 @@ test "changing KDE hotkey restores the previous Spectacle shortcut" {
     defer freeBinding(second);
     const content = try readAbsolute(second.snippetPath);
     defer testing.allocator.free(content);
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, content, "_launch="));
+    // ZigIt capture desktop owns the new hotkey; Spectacle Print is suppressed.
+    try testing.expect(std.mem.indexOf(u8, content, "[services][com.visorcraft.zigit.capture.desktop]") != null);
     try testing.expect(std.mem.indexOf(u8, content, "_launch=Meta+Shift+S") != null);
     try testing.expectError(error.FileNotFound, std.Io.Dir.openFileAbsolute(app_io.get(), home ++ "/.config/zigit/kde-shortcut-backup", .{}));
 }

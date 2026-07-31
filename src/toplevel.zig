@@ -69,9 +69,9 @@ const handle_listener = wl.zwlr_foreign_toplevel_handle_v1_listener{
 /// zwlr_foreign_toplevel_manager_v1.
 ///
 /// Lifetime note: `ctx` and the listener data it holds are stack-local, but
-/// every proxy is destroyed before they go out of scope — the manager and
+/// every proxy is destroyed before they go out of scope: the manager and
 /// all toplevel handles via defers below, the registry when the display is
-/// disconnected — and no event is dispatched after the final roundtrip, so
+/// disconnected, and no event is dispatched after the final roundtrip, so
 /// no listener ever fires into dead memory.
 pub fn toplevels(allocator: std.mem.Allocator) ![]Toplevel {
     const display = wl.wl_display_connect(null) orelse return error.ConnectFailed;

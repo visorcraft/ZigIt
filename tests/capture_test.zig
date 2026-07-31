@@ -103,7 +103,7 @@ test "cropPolygon masks a convex polygon" {
     var data: [8 * 8 * 4]u8 = undefined;
     @memset(&data, 0xaa);
     const b = capture.Buffer{ .width = 8, .height = 8, .stride = 32, .format = .rgba, .data = &data };
-    // Triangle covering pixels (2,2), (5,2), (3,5) — mask outside to zero.
+    // Triangle covering pixels (2,2), (5,2), (3,5); mask outside to zero.
     const poly = capture.Polygon{ .points = &.{
         .{ .x = 2, .y = 2 }, .{ .x = 5, .y = 2 }, .{ .x = 3, .y = 5 },
     } };

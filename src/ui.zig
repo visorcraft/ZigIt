@@ -30,6 +30,8 @@ const SettingsForm = struct {
     dirty: bool = false,
     /// True while the hotkey field is listening for a chord.
     recording_hotkey: bool = false,
+    /// Previous GLFW PrintScreen down state while recording (edge detection).
+    print_was_down: bool = false,
     status_msg: [128]u8 = undefined,
     status_len: usize = 0,
     status_is_error: bool = false,
@@ -53,6 +55,7 @@ const SettingsForm = struct {
         self.font_size = @intCast(cfg.default_font_size);
         self.dirty = false;
         self.recording_hotkey = false;
+        self.print_was_down = false;
         self.status_len = 0;
     }
 
@@ -60,6 +63,7 @@ const SettingsForm = struct {
         self.setBuf(&self.hotkey, &self.hotkey_len, chord);
         self.dirty = true;
         self.recording_hotkey = false;
+        self.print_was_down = false;
     }
 
     fn setBuf(self: *SettingsForm, buf: []u8, len: *usize, src: []const u8) void {
@@ -137,7 +141,7 @@ pub const Ui = struct {
         var cfg = try config_mod.Config.load(allocator, cfg_path);
         defer cfg.deinit(allocator);
 
-        // Real TTF (Inter/Adwaita/OpenSans) instead of Proggy pixel font —
+        // Real TTF (Inter/Adwaita/OpenSans) instead of Proggy pixel font;
         // must run before first NewFrame so the atlas is ready.
         theme_mod.loadFonts();
         theme_mod.apply(cfg.theme);
@@ -161,7 +165,7 @@ pub const Ui = struct {
         defer env.deinit();
         const detected = compositor.detect(&env);
         if (detected == .unknown) {
-            toast.show(.warn, "Unknown compositor — open Settings to bind a hotkey manually.") catch {};
+            toast.show(.warn, "Unknown compositor: open Settings to bind a hotkey manually.") catch {};
         }
 
         var applied_theme = cfg.theme;
@@ -215,7 +219,7 @@ pub const Ui = struct {
                 }
                 if (c.igBeginTabItem("Settings", null, 0)) {
                     c.igSpacing();
-                    _ = drawSettings(allocator, &form, &cfg, cfg_path, detected, &toast);
+                    _ = drawSettings(allocator, &form, &cfg, cfg_path, detected, &toast, w, &kde_shortcuts_blocked);
                     const want: config_mod.Theme = if (form.theme_idx == 1) .light else .dark;
                     if (want != applied_theme) {
                         theme_mod.apply(want);
@@ -234,14 +238,17 @@ pub const Ui = struct {
 
             c.igEnd();
 
-            if (detected == .kde and form.recording_hotkey != recording_before_frame) {
-                if (form.recording_hotkey) {
+            // Keep KDE global shortcuts paused for the whole recording session.
+            // State-based (not edge-only) so a chord committed the same frame as
+            // Record still unblocks, and block is re-applied if needed.
+            if (detected == .kde) {
+                if (form.recording_hotkey and !kde_shortcuts_blocked) {
                     if (compositor.setKdeShortcutsBlocked(allocator, true)) |_| {
                         kde_shortcuts_blocked = true;
                     } else |_| {
                         form.setStatus("Could not pause KDE shortcuts; use Clear for Print", true);
                     }
-                } else if (kde_shortcuts_blocked) {
+                } else if (!form.recording_hotkey and kde_shortcuts_blocked) {
                     compositor.setKdeShortcutsBlocked(allocator, false) catch {};
                     kde_shortcuts_blocked = false;
                 }
@@ -325,6 +332,8 @@ fn drawSettings(
     cfg_path: []const u8,
     detected: compositor.Compositor,
     toast: *toast_mod.Toast,
+    window: ?*c.GLFWwindow,
+    kde_shortcuts_blocked: *bool,
 ) bool {
     var changed = false;
 
@@ -337,12 +346,12 @@ fn drawSettings(
     // ── Capture ─────────────────────────────────────────────────
     theme_mod.sectionHeader("Capture");
     formRowStart("Hotkey");
-    if (drawHotkeyRecorder(form)) {
+    if (drawHotkeyRecorder(allocator, form, detected, window, kde_shortcuts_blocked)) {
         changed = true;
         if (detected == .kde) showKdeHotkeyOwner(allocator, form);
     }
     c.igIndent(label_col_w);
-    c.igTextDisabled("Click Record, then press the keys you want. Esc cancels.");
+    c.igTextDisabled("Click Record, then press the keys you want. Esc cancels. Clear sets Print without pressing the key.");
     c.igUnindent(label_col_w);
 
     formRowStart("Save directory");
@@ -487,7 +496,7 @@ fn drawSettings(
         const d = config_mod.Config.defaults();
         form.fromConfig(d);
         form.dirty = true;
-        form.setStatus("Reset — click Save preferences to write disk", false);
+        form.setStatus("Reset: click Save preferences to write disk", false);
     }
     theme_mod.popGhost();
 
@@ -556,7 +565,7 @@ fn savePrefs(
     form.recording_hotkey = false;
 
     var next = try form.toConfig(allocator);
-    // Don't free on error after save — transfer ownership into cfg.
+    // Don't free on error after save; transfer ownership into cfg.
     try next.save(cfg_path);
     cfg.deinit(allocator);
     cfg.* = next;
@@ -566,10 +575,16 @@ fn savePrefs(
 }
 
 /// Click-to-record hotkey control. Returns true when the chord changes.
-fn drawHotkeyRecorder(form: *SettingsForm) bool {
+fn drawHotkeyRecorder(
+    allocator: std.mem.Allocator,
+    form: *SettingsForm,
+    detected: compositor.Compositor,
+    window: ?*c.GLFWwindow,
+    kde_shortcuts_blocked: *bool,
+) bool {
     var changed = false;
 
-    // Display box — not editable by typing.
+    // Display box: not editable by typing.
     const label: [*:0]const u8 = if (form.recording_hotkey)
         "Press keys…"
     else if (form.hotkey_len > 0)
@@ -592,12 +607,27 @@ fn drawHotkeyRecorder(form: *SettingsForm) bool {
     if (form.recording_hotkey) {
         if (c.igButton("Cancel", .{ .x = 90, .y = 0 })) {
             form.recording_hotkey = false;
+            form.print_was_down = false;
         }
         // Capture the next non-modifier key while modifiers are held.
-        if (pollHotkeyChord(form)) changed = true;
+        if (pollHotkeyChord(form, window)) changed = true;
     } else {
         if (c.igButton("Record", .{ .x = 90, .y = 0 })) {
             form.recording_hotkey = true;
+            // Seed Print edge detector so a held key does not auto-commit.
+            form.print_was_down = if (window) |win|
+                c.glfwGetKey(win, c.GLFW_KEY_PRINT_SCREEN) == c.GLFW_PRESS
+            else
+                false;
+            // Pause KDE grabs immediately so Print can reach us this session.
+            // (Frame-end maintenance also keeps this in sync.)
+            if (detected == .kde and !kde_shortcuts_blocked.*) {
+                if (compositor.setKdeShortcutsBlocked(allocator, true)) |_| {
+                    kde_shortcuts_blocked.* = true;
+                } else |_| {
+                    form.setStatus("Could not pause KDE shortcuts; use Clear for Print", true);
+                }
+            }
         }
         c.igSameLine(0.0, 8.0);
         theme_mod.pushGhost();
@@ -608,15 +638,33 @@ fn drawHotkeyRecorder(form: *SettingsForm) bool {
         theme_mod.popGhost();
     }
     if (c.igIsItemHovered(0) and !form.recording_hotkey) {
-        c.igSetTooltip("Record a key combination (e.g. Print, Super+Shift+S)");
+        c.igSetTooltip("Record a key combination (e.g. Print, Super+Shift+S). Clear restores Print without pressing the key.");
     }
     return changed;
 }
 
+/// True if Print Screen was activated this frame. Linux/KDE often deliver only
+/// key-up (or SysRq) for Print, so we also watch GLFW edges and ImGui release.
+fn printScreenActivated(form: *SettingsForm, window: ?*c.GLFWwindow) bool {
+    const imgui_down = c.igIsKeyDown_Nil(c.ImGuiKey_PrintScreen);
+    const imgui_pressed = c.igIsKeyPressed_Bool(c.ImGuiKey_PrintScreen, false);
+    const imgui_released = c.igIsKeyReleased_Nil(c.ImGuiKey_PrintScreen);
+
+    var glfw_down = false;
+    if (window) |win| {
+        glfw_down = c.glfwGetKey(win, c.GLFW_KEY_PRINT_SCREEN) == c.GLFW_PRESS;
+    }
+    const glfw_edge = glfw_down and !form.print_was_down;
+    form.print_was_down = glfw_down or imgui_down;
+
+    return imgui_pressed or imgui_released or glfw_edge;
+}
+
 /// While recording: Esc cancels; any non-modifier key press commits Super/Ctrl/Alt/Shift+key.
-fn pollHotkeyChord(form: *SettingsForm) bool {
+fn pollHotkeyChord(form: *SettingsForm, window: ?*c.GLFWwindow) bool {
     if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
         form.recording_hotkey = false;
+        form.print_was_down = false;
         return false;
     }
 
@@ -625,10 +673,15 @@ fn pollHotkeyChord(form: *SettingsForm) bool {
     const alt = c.igIsKeyDown_Nil(c.ImGuiKey_LeftAlt) or c.igIsKeyDown_Nil(c.ImGuiKey_RightAlt);
     const super = c.igIsKeyDown_Nil(c.ImGuiKey_LeftSuper) or c.igIsKeyDown_Nil(c.ImGuiKey_RightSuper);
 
+    // Print Screen first: special delivery on Linux (often release-only).
+    if (printScreenActivated(form, window)) {
+        commitHotkeyChord(form, super, ctrl, alt, shift, "Print");
+        return true;
+    }
+
     // Keys we accept as the "main" key of a chord (not pure modifiers).
     // ImGuiKey is an unsigned enum in cimgui.
     const keys = [_]struct { key: c_uint, name: []const u8 }{
-        .{ .key = c.ImGuiKey_PrintScreen, .name = "Print" },
         .{ .key = c.ImGuiKey_ScrollLock, .name = "Scroll_Lock" },
         .{ .key = c.ImGuiKey_Pause, .name = "Pause" },
         .{ .key = c.ImGuiKey_Insert, .name = "Insert" },
@@ -696,19 +749,29 @@ fn pollHotkeyChord(form: *SettingsForm) bool {
 
     for (keys) |k| {
         if (!c.igIsKeyPressed_Bool(k.key, false)) continue;
-
-        var buf: [64]u8 = undefined;
-        var w: std.Io.Writer = .fixed(&buf);
-        // Order matches common compositor convention: Super, Ctrl, Alt, Shift, key.
-        if (super) w.writeAll("Super+") catch {};
-        if (ctrl) w.writeAll("Ctrl+") catch {};
-        if (alt) w.writeAll("Alt+") catch {};
-        if (shift) w.writeAll("Shift+") catch {};
-        w.writeAll(k.name) catch {};
-        form.setHotkey(w.buffered());
+        commitHotkeyChord(form, super, ctrl, alt, shift, k.name);
         return true;
     }
     return false;
+}
+
+fn commitHotkeyChord(
+    form: *SettingsForm,
+    super: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    key_name: []const u8,
+) void {
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    // Order matches common compositor convention: Super, Ctrl, Alt, Shift, key.
+    if (super) w.writeAll("Super+") catch {};
+    if (ctrl) w.writeAll("Ctrl+") catch {};
+    if (alt) w.writeAll("Alt+") catch {};
+    if (shift) w.writeAll("Shift+") catch {};
+    w.writeAll(key_name) catch {};
+    form.setHotkey(w.buffered());
 }
 
 /// Opens a native directory picker (kdialog on KDE, else zenity).
@@ -820,7 +883,7 @@ fn installBinding(
     }
     compositor.reload(allocator, binding.reload) catch {
         form.setStatus("Binding installed; reload compositor manually", false);
-        toast.show(.warn, "Binding installed — reload compositor to apply") catch {};
+        toast.show(.warn, "Binding installed: reload compositor to apply") catch {};
         return;
     };
     if (maybe_owner != null and maybe_owner.?.isSpectacle()) {

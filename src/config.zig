@@ -94,7 +94,7 @@ pub const Config = struct {
 
         var buf: [2048]u8 = undefined;
         var w: std.Io.Writer = .fixed(&buf);
-        try w.writeAll("# ZigIt preferences — edit here or via the Settings tab in the daemon.\n");
+        try w.writeAll("# ZigIt preferences: edit here or via the Settings tab in the daemon.\n");
         try w.print("save_dir = \"{s}\"\n", .{self.save_dir});
         try w.print("hotkey = \"{s}\"\n", .{self.hotkey});
         try w.print("marquee_position = \"{s}\"\n", .{marqueePositionName(self.marquee_position)});

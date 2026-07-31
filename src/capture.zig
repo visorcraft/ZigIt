@@ -165,7 +165,7 @@ const wl = @cImport({
 
 // The interface/message tables reference each other (manager's types point at
 // the frame interface, frame's messages point back into the shared types
-// table), which is a comptime dependency loop in Zig — so they are filled in
+// table), which is a comptime dependency loop in Zig, so they are filled in
 // once at runtime instead.
 var screencopy_types: [16]?*const wl.wl_interface = undefined;
 var screencopy_manager_requests: [3]wl.wl_message = undefined;

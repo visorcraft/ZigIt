@@ -91,7 +91,7 @@ fn installUserChromeInner(allocator: std.mem.Allocator) !void {
 
     // Desktop file: ~/.local/share/applications/com.visorcraft.zigit.desktop
     // Only write if missing or still using the old generic Icon=camera-photo /
-    // no Icon line — do not clobber a user-customized entry that already has
+    // no Icon line: do not clobber a user-customized entry that already has
     // our icon name.
     const apps_dir = try std.fmt.allocPrint(allocator, "{s}/applications", .{data_home});
     defer allocator.free(apps_dir);
@@ -115,7 +115,7 @@ fn installDesktopFile(path: []const u8) !void {
     const io = app_io.get();
     if (std.Io.Dir.cwd().readFileAlloc(io, path, std.heap.page_allocator, .limited(1 << 16))) |existing| {
         defer std.heap.page_allocator.free(existing);
-        // Already ours with the correct icon — leave alone.
+        // Already ours with the correct icon; leave alone.
         if (std.mem.indexOf(u8, existing, "Icon=com.visorcraft.zigit") != null) return;
         // KDE capture-only launcher (NoDisplay=true) is managed separately;
         // if this is that file, still rewrite Icon= but preserve Exec/shortcuts

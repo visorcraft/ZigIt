@@ -29,7 +29,7 @@ pub fn captureDir(allocator: std.mem.Allocator, override: []const u8) ![]u8 {
     std.Io.Dir.createDirAbsolute(io, full, .default_dir) catch |e| switch (e) {
         error.PathAlreadyExists => {},
         error.FileNotFound => {
-            // Parent missing — create the tree.
+            // Parent missing: create the tree.
             try ensureDirTree(full);
         },
         else => return e,

@@ -163,8 +163,9 @@ Start at the [documentation index](docs/README.md).
 
 ## Contributing and support
 
-Keep changes focused, add a `*_test.zig` regression test for non-trivial
-logic, and run:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for workflow, coding standards, and the
+local test gate. Keep changes focused, add a `*_test.zig` regression test for
+non-trivial logic, and run:
 
 ```bash
 zig fmt --check path/to/changed-file.zig
@@ -172,7 +173,11 @@ zig build test
 ```
 
 Report bugs and feature requests through
-[GitHub Issues](https://github.com/visorcraft/zigit/issues).
+[GitHub Issues](https://github.com/visorcraft/ZigIt/issues).
+
+Security issues: do **not** file a public issue. Use
+[private vulnerability reporting](https://github.com/visorcraft/ZigIt/security/advisories/new)
+and read [SECURITY.md](SECURITY.md).
 
 ## License
 

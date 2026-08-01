@@ -458,6 +458,15 @@ pub const EditorWindow = struct {
                     }
                     c.igEndMenu();
                 }
+                if (c.igBeginMenu("Help", true)) {
+                    c.igTextDisabled("ZigIt v%s", @import("root").version);
+                    c.igSeparator();
+                    c.igTextDisabled("Tools: keys 1-7");
+                    c.igTextDisabled("Save: Ctrl+S");
+                    c.igTextDisabled("Copy image: Ctrl+C");
+                    c.igTextDisabled("Undo/Redo: Ctrl+Z / Ctrl+Y");
+                    c.igEndMenu();
+                }
                 c.igEndMenuBar();
             }
 
@@ -482,7 +491,7 @@ pub const EditorWindow = struct {
 
             // Expand / collapse toggle.
             theme_mod.pushGhost();
-            const toggle_label: [*:0]const u8 = if (tools_expanded) "‹‹##rail_toggle" else "››##rail_toggle";
+            const toggle_label: [*:0]const u8 = if (tools_expanded) "<<##rail_toggle" else ">>##rail_toggle";
             if (c.igButton(toggle_label, .{ .x = btn_w, .y = 28 })) {
                 tools_expanded = !tools_expanded;
             }
@@ -527,7 +536,7 @@ pub const EditorWindow = struct {
                     );
                     // Muted digit shortcut on the right edge.
                     var digit_buf: [4]u8 = undefined;
-                    const digit = std.fmt.bufPrintZ(&digit_buf, "{d}", .{ti_i + 1}) catch "·";
+                    const digit = std.fmt.bufPrintZ(&digit_buf, "{d}", .{ti_i + 1}) catch "?";
                     var dsz: c.ImVec2 = undefined;
                     c.igCalcTextSize(&dsz, digit.ptr, null, false, -1.0);
                     c.ImDrawList_AddText_Vec2(
@@ -674,7 +683,7 @@ pub const EditorWindow = struct {
             theme_mod.pushHeading();
             if (doc.ops.items.len > 0) {
                 c.igPushStyleColor_Vec4(c.ImGuiCol_Text, .{ .x = 0.95, .y = 0.40, .z = 0.35, .w = 1.0 });
-                c.igText("●");
+                c.igText("*");
                 c.igPopStyleColor(1);
                 c.igSameLine(0.0, 6.0);
             }
@@ -685,7 +694,7 @@ pub const EditorWindow = struct {
             c.igSameLine(0.0, 12.0);
             c.igSetCursorPosY(c.igGetCursorPosY() + 2.0);
             var dim_buf: [48]u8 = undefined;
-            const dim_z = std.fmt.bufPrintZ(&dim_buf, "{d}×{d}", .{ tex_w, tex_h }) catch "·";
+            const dim_z = std.fmt.bufPrintZ(&dim_buf, "{d}x{d}", .{ tex_w, tex_h }) catch "?";
             drawChip(dim_z.ptr, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 }, .{ .x = 0.85, .y = 0.85, .z = 0.88, .w = 1.0 });
 
             c.igSameLine(0.0, 8.0);
@@ -747,7 +756,7 @@ pub const EditorWindow = struct {
             // Zoom % anchored top-right of canvas body.
             {
                 var zoom_buf: [24]u8 = undefined;
-                const zoom_z = std.fmt.bufPrintZ(&zoom_buf, "{d}%", .{zoom_pct}) catch "·";
+                const zoom_z = std.fmt.bufPrintZ(&zoom_buf, "{d}%", .{zoom_pct}) catch "?";
                 const saved_x = c.igGetCursorPosX();
                 const saved_y = c.igGetCursorPosY();
                 var zsz: c.ImVec2 = undefined;
@@ -1000,7 +1009,7 @@ pub const EditorWindow = struct {
                 theme_mod.pushHeading();
                 c.igText("Place text");
                 theme_mod.popHeading();
-                c.igTextDisabled("Enter to place · Esc to cancel");
+                c.igTextDisabled("Enter to place - Esc to cancel");
                 c.igSpacing();
                 if (text_focus_request) {
                     c.igSetKeyboardFocusHere(0);
@@ -1123,8 +1132,8 @@ fn toolNameZ(t: Tool) [*:0]const u8 {
 
 fn toolHintZ(t: Tool) [*:0]const u8 {
     return switch (t) {
-        .crop => "Drag on the image to crop · Esc closes",
-        .arrow => "Drag to draw an arrow · 1–7 switch tools",
+        .crop => "Drag on the image to crop - Esc closes",
+        .arrow => "Drag to draw an arrow - keys 1-7 switch tools",
         .rect => "Drag to draw a rectangle outline",
         .pen => "Click and drag for freehand strokes",
         .text => "Click where the text should appear",
@@ -1147,7 +1156,7 @@ fn drawChip(label: [*:0]const u8, bg: c.ImVec4, fg: c.ImVec4) void {
 
 fn drawSelectionSizeLabel(dl: *c.ImDrawList, anchor: c.ImVec2, w: u32, h: u32) void {
     var buf: [48]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{d}×{d}", .{ w, h }) catch return;
+    const z = std.fmt.bufPrintZ(&buf, "{d}x{d}", .{ w, h }) catch return;
     var sz: c.ImVec2 = undefined;
     c.igCalcTextSize(&sz, z.ptr, null, false, -1.0);
     const pad: f32 = 4.0;

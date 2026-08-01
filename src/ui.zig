@@ -279,6 +279,9 @@ pub const Ui = struct {
             c.igText("ZigIt");
             c.igPopStyleColor(1);
             theme_mod.popTitle();
+            c.igSameLine(0.0, 10.0);
+            c.igSetCursorPosY(c.igGetCursorPosY() + 8.0);
+            c.igTextDisabled("v%s", @import("root").version);
             c.igSameLine(0.0, 12.0);
             c.igSetCursorPosY(c.igGetCursorPosY() + 6.0);
             c.igTextDisabled("Screenshot tool");
@@ -477,7 +480,7 @@ fn drawCaptures(
     c.igPopStyleColor(3);
 
     c.igSpacing();
-    c.igTextDisabled("Click a thumbnail to open the editor · right-click for more");
+    c.igTextDisabled("Click a thumbnail to open the editor - right-click for more");
     c.igSpacing();
 
     // Thumbnail strip fills remaining space.
@@ -551,7 +554,7 @@ fn drawSettings(
         c.igSetTooltip("Empty uses ~/screenshots. You can also type a path or click Browse.");
     }
     c.igSameLine(0.0, 8.0);
-    if (c.igButton("Browse…", .{ .x = 90, .y = 0 })) {
+    if (c.igButton("Browse...", .{ .x = 90, .y = 0 })) {
         const picked = browseDirectory(allocator, form) catch |e| blk: {
             form.setStatus(@errorName(e), true);
             toast.show(.@"error", "Folder picker failed") catch {};
@@ -617,7 +620,7 @@ fn drawSettings(
     if (detected == .unknown) {
         c.igTextWrapped("Could not identify your compositor. Bind a key yourself to run:  zigit capture");
     } else if (detected == .gnome) {
-        c.igTextWrapped("GNOME: use Settings → Keyboard → Custom Shortcuts, or run zigit setup.");
+        c.igTextWrapped("GNOME: use Settings > Keyboard > Custom Shortcuts, or run zigit setup.");
     } else {
         c.igTextDisabled("Writes a compositor snippet so your hotkey launches a capture.");
         c.igSpacing();
@@ -704,11 +707,19 @@ fn drawAbout(
     c.igText("ZigIt");
     c.igPopStyleColor(1);
     theme_mod.popTitle();
+    c.igSameLine(0.0, 10.0);
+    c.igSetCursorPosY(c.igGetCursorPosY() + 6.0);
+    c.igTextDisabled("v%s", @import("root").version);
     c.igTextDisabled("Wayland-first screenshot workflow for Linux.");
     c.igSpacing();
 
+    theme_mod.sectionHeader("Version");
+    c.igText("ZigIt %s", @import("root").version);
+    c.igTextDisabled("Run zigit --version from a terminal for the same value.");
+    c.igSpacing();
+
     theme_mod.sectionHeader("How to capture");
-    c.igBulletText("Press your hotkey (default: Print Screen → region select)");
+    c.igBulletText("Press your hotkey (default: Print Screen -> region select)");
     c.igBulletText("Or use Capture region / Capture window on the Captures tab");
     c.igBulletText("PNG is saved and copied to the clipboard automatically");
     c.igBulletText("The editor opens so you can annotate immediately");
@@ -768,7 +779,7 @@ fn drawHotkeyRecorder(
 
     // Display box: not editable by typing.
     const label: [*:0]const u8 = if (form.recording_hotkey)
-        "Press keys…"
+        "Press keys..."
     else if (form.hotkey_len > 0)
         @as([*:0]const u8, @ptrCast(&form.hotkey))
     else
@@ -1108,7 +1119,7 @@ fn spawnCapture(allocator: std.mem.Allocator, argv: []const []const u8, toast: *
         toast.show(.@"error", "Failed to start capture") catch {};
         return;
     };
-    toast.show(.info, "Starting capture…") catch {};
+    toast.show(.info, "Starting capture...") catch {};
 }
 
 fn openFolder(allocator: std.mem.Allocator, dir: []const u8, toast: *toast_mod.Toast) void {

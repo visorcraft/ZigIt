@@ -97,9 +97,9 @@ pub const Toast = struct {
             _ = c.igBegin(name.ptr, null, flags);
             c.igPushStyleColor_Vec4(c.ImGuiCol_Text, accent);
             const prefix: [*:0]const u8 = switch (it.level) {
-                .info => "●",
-                .warn => "▲",
-                .@"error" => "✕",
+                .info => "*",
+                .warn => "!",
+                .@"error" => "X",
             };
             c.igText("%s", prefix);
             c.igPopStyleColor(1);

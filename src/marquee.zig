@@ -316,7 +316,7 @@ pub const Marquee = struct {
             } else if (t.broken) {
                 c.igTextDisabled("(broken)");
             } else {
-                c.igTextDisabled("(loading…)");
+                c.igTextDisabled("(loading...)");
             }
 
             // Truncate long basenames for the label under the thumb.

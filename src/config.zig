@@ -152,6 +152,19 @@ pub fn formatCaptureAction(allocator: std.mem.Allocator, exe: []const u8, mode: 
     };
 }
 
+/// Path to write into desktop/hotkey launchers. Prefer a real absolute binary
+/// (KDE global shortcuts do not always honor user PATH). Never use a vanished
+/// ~/.local/bin path when /usr/bin/zigit exists.
+pub fn launcherExe(allocator: std.mem.Allocator) ![]u8 {
+    const io = app_io.get();
+    // AUR/system install
+    if (std.Io.Dir.accessAbsolute(io, "/usr/bin/zigit", .{})) |_| {
+        return try allocator.dupe(u8, "/usr/bin/zigit");
+    } else |_| {}
+    // Fall back to whatever is running (dev builds).
+    return try std.process.executablePathAlloc(io, allocator);
+}
+
 pub fn marqueePositionName(p: MarqueePosition) []const u8 {
     return switch (p) {
         .top_right => "top-right",

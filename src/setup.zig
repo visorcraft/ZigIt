@@ -54,7 +54,8 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     defer if (!std.mem.eql(u8, cfg_path, "/dev/null")) allocator.free(cfg_path);
     const cfg = try config.Config.load(allocator, cfg_path);
     defer cfg.deinit(allocator);
-    const exe = try std.process.executablePathAlloc(app_io.get(), allocator);
+    // Absolute system path when available (KDE hotkeys don't honor user PATH).
+    const exe = try config.launcherExe(allocator);
     defer allocator.free(exe);
     const action = try config.formatCaptureAction(allocator, exe, cfg.capture_mode);
     defer allocator.free(action);

@@ -410,6 +410,8 @@ pub const EditorWindow = struct {
         var text_focus_request = false;
         // Start expanded so labels are fully visible; user can collapse to icons.
         var tools_expanded = true;
+        // 1.0 = fit image in canvas; wheel multiplies this. Middle-drag pans when zoomed.
+        var view_zoom: f32 = 1.0;
 
         while (c.glfwWindowShouldClose(win) == 0) {
             c.glfwPollEvents();
@@ -462,6 +464,9 @@ pub const EditorWindow = struct {
                     c.igTextDisabled("ZigIt v%s", @import("root").version);
                     c.igSeparator();
                     c.igTextDisabled("Tools: keys 1-7");
+                    c.igTextDisabled("Zoom: scroll wheel  (+/- keys)");
+                    c.igTextDisabled("Pan: middle-drag or Space+drag");
+                    c.igTextDisabled("Fit: 0 or click zoom chip");
                     c.igTextDisabled("Save: Ctrl+S");
                     c.igTextDisabled("Copy image: Ctrl+C");
                     c.igTextDisabled("Undo/Redo: Ctrl+Z / Ctrl+Y");
@@ -672,7 +677,13 @@ pub const EditorWindow = struct {
                 .{ .x = 0.08, .y = 0.08, .z = 0.09, .w = 1.0 };
             c.igPushStyleColor_Vec4(c.ImGuiCol_ChildBg, canvas_bg);
             c.igPushStyleVar_Vec2(c.ImGuiStyleVar_WindowPadding, .{ .x = 16.0, .y = 14.0 });
-            _ = c.igBeginChild_Str("##canvas", .{ .x = 0, .y = 0 }, c.ImGuiChildFlags_Borders, c.ImGuiWindowFlags_NoScrollbar);
+            // Scrollbars for pan when zoomed; wheel is captured for zoom (NoScrollWithMouse).
+            _ = c.igBeginChild_Str(
+                "##canvas",
+                .{ .x = 0, .y = 0 },
+                c.ImGuiChildFlags_Borders,
+                c.ImGuiWindowFlags_HorizontalScrollbar | c.ImGuiWindowFlags_NoScrollWithMouse,
+            );
 
             // Header: basename (+ dirty) + chips.
             const base = std.fs.path.basename(path);
@@ -731,46 +742,100 @@ pub const EditorWindow = struct {
             }
 
             c.igSpacing();
-            c.igTextDisabled("%s", toolHintZ(current_tool));
+            c.igTextDisabled("%s  |  scroll=zoom  middle-drag=pan  0=fit", toolHintZ(current_tool));
             c.igSpacing();
 
-            // Fit image to available region (allow upscale) and center.
+            // Fit baseline * user zoom (scroll wheel). 1.0 = fit in canvas.
             var avail: c.ImVec2 = undefined;
             c.igGetContentRegionAvail(&avail);
             const fit_h = @max(40.0, avail.y - 8.0);
             const fit_w = @max(40.0, avail.x);
             const iw: f32 = @floatFromInt(tex_w);
             const ih: f32 = @floatFromInt(tex_h);
-            var disp_w = iw;
-            var disp_h = ih;
-            var zoom_pct: i32 = 100;
-            if (iw > 0 and ih > 0) {
-                const s = @min(fit_w / iw, fit_h / ih);
-                if (s > 0) {
-                    disp_w = @floor(iw * s);
-                    disp_h = @floor(ih * s);
-                    zoom_pct = @intFromFloat(@round(s * 100.0));
+            const fit_s: f32 = if (iw > 0 and ih > 0) @min(fit_w / iw, fit_h / ih) else 1.0;
+            const prev_zoom = view_zoom;
+
+            // Wheel zoom / middle-pan while the canvas window is hovered.
+            const canvas_hovered = c.igIsWindowHovered(c.ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+            const mouse = io.*.MousePos;
+            var zoom_scroll_fix: ?struct { local_x: f32, local_y: f32, content_x: f32, content_y: f32, ratio: f32 } = null;
+            if (canvas_hovered and !text_editing) {
+                const wheel = io.*.MouseWheel;
+                if (wheel != 0) {
+                    const factor: f32 = if (wheel > 0) 1.15 else (1.0 / 1.15);
+                    view_zoom = std.math.clamp(view_zoom * factor, 0.05, 32.0);
+                    var wpos: c.ImVec2 = undefined;
+                    c.igGetWindowPos(&wpos);
+                    const local_x = mouse.x - wpos.x;
+                    const local_y = mouse.y - wpos.y;
+                    const sx = c.igGetScrollX();
+                    const sy = c.igGetScrollY();
+                    const ratio = if (prev_zoom > 0) view_zoom / prev_zoom else 1.0;
+                    zoom_scroll_fix = .{
+                        .local_x = local_x,
+                        .local_y = local_y,
+                        .content_x = local_x + sx,
+                        .content_y = local_y + sy,
+                        .ratio = ratio,
+                    };
+                }
+                // Middle-button pan (also accept Space+LMB as alternate).
+                const mmb = c.igIsMouseDragging(c.ImGuiMouseButton_Middle, -1.0);
+                const space_pan = c.igIsKeyDown_Nil(c.ImGuiKey_Space) and c.igIsMouseDragging(c.ImGuiMouseButton_Left, -1.0);
+                if (mmb or space_pan) {
+                    const d = io.*.MouseDelta;
+                    c.igSetScrollX_Float(c.igGetScrollX() - d.x);
+                    c.igSetScrollY_Float(c.igGetScrollY() - d.y);
+                }
+            }
+            // Keyboard zoom / fit.
+            if (!text_editing and !c.igIsKeyDown_Nil(c.ImGuiKey_LeftCtrl) and !c.igIsKeyDown_Nil(c.ImGuiKey_RightCtrl)) {
+                if (c.igIsKeyPressed_Bool(c.ImGuiKey_Equal, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadAdd, false)) {
+                    view_zoom = std.math.clamp(view_zoom * 1.15, 0.05, 32.0);
+                }
+                if (c.igIsKeyPressed_Bool(c.ImGuiKey_Minus, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_KeypadSubtract, false)) {
+                    view_zoom = std.math.clamp(view_zoom / 1.15, 0.05, 32.0);
+                }
+                if (c.igIsKeyPressed_Bool(c.ImGuiKey_0, false) or c.igIsKeyPressed_Bool(c.ImGuiKey_Keypad0, false)) {
+                    view_zoom = 1.0;
                 }
             }
 
-            // Zoom % anchored top-right of canvas body.
+            const view_scale = if (fit_s > 0) fit_s * view_zoom else view_zoom;
+            var disp_w: f32 = if (iw > 0) @floor(iw * view_scale) else 1;
+            var disp_h: f32 = if (ih > 0) @floor(ih * view_scale) else 1;
+            if (disp_w < 1) disp_w = 1;
+            if (disp_h < 1) disp_h = 1;
+            const zoom_pct: i32 = @intFromFloat(@round(view_scale * 100.0));
+
+            // Zoom chip (click to fit).
             {
-                var zoom_buf: [24]u8 = undefined;
-                const zoom_z = std.fmt.bufPrintZ(&zoom_buf, "{d}%", .{zoom_pct}) catch "?";
+                var zoom_buf: [32]u8 = undefined;
+                const zoom_z = std.fmt.bufPrintZ(&zoom_buf, "{d}%##zoom_chip", .{zoom_pct}) catch "100%##z";
                 const saved_x = c.igGetCursorPosX();
                 const saved_y = c.igGetCursorPosY();
                 var zsz: c.ImVec2 = undefined;
                 c.igCalcTextSize(&zsz, zoom_z.ptr, null, false, -1.0);
-                c.igSetCursorPos(.{ .x = saved_x + fit_w - zsz.x - 20, .y = saved_y });
-                drawChip(zoom_z.ptr, .{ .x = 0.12, .y = 0.12, .z = 0.14, .w = 0.92 }, .{ .x = 0.70, .y = 0.70, .z = 0.74, .w = 1.0 });
+                c.igSetCursorPos(.{ .x = saved_x + fit_w - zsz.x - 28, .y = saved_y });
+                c.igPushStyleColor_Vec4(c.ImGuiCol_Button, .{ .x = 0.12, .y = 0.12, .z = 0.14, .w = 0.92 });
+                c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonHovered, .{ .x = 0.20, .y = 0.20, .z = 0.24, .w = 1.0 });
+                c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonActive, .{ .x = 0.28, .y = 0.28, .z = 0.32, .w = 1.0 });
+                c.igPushStyleColor_Vec4(c.ImGuiCol_Text, .{ .x = 0.70, .y = 0.70, .z = 0.74, .w = 1.0 });
+                c.igPushStyleVar_Vec2(c.ImGuiStyleVar_FramePadding, .{ .x = 8.0, .y = 3.0 });
+                c.igPushStyleVar_Float(c.ImGuiStyleVar_FrameRounding, 6.0);
+                if (c.igSmallButton(zoom_z.ptr)) view_zoom = 1.0;
+                c.igPopStyleVar(2);
+                c.igPopStyleColor(4);
+                if (c.igIsItemHovered(0)) c.igSetTooltip("Click to fit  |  scroll wheel to zoom");
                 c.igSetCursorPos(.{ .x = saved_x, .y = saved_y });
             }
 
-            const off_x = @max(0, (fit_w - disp_w) * 0.5);
-            const off_y = @max(0, (fit_h - disp_h) * 0.5);
-            const block_x = c.igGetCursorPosX();
-            const block_y = c.igGetCursorPosY();
-            c.igSetCursorPos(.{ .x = block_x + off_x, .y = block_y + off_y });
+            // Scrollable content region: at least the viewport, larger when zoomed in.
+            const content_w = @max(fit_w, disp_w + 16.0);
+            const content_h = @max(fit_h, disp_h + 16.0);
+            const img_x = (content_w - disp_w) * 0.5;
+            const img_y = (content_h - disp_h) * 0.5;
+            c.igSetCursorPos(.{ .x = img_x, .y = img_y });
 
             var screen_origin: c.ImVec2 = undefined;
             c.igGetCursorScreenPos(&screen_origin);
@@ -785,15 +850,28 @@ pub const EditorWindow = struct {
                 .{ .x = 0, .y = 0, .z = 0, .w = 0 },
             );
 
+            // Expand scroll region to full content size.
+            c.igSetCursorPos(.{ .x = content_w, .y = content_h });
+            c.igDummy(.{ .x = 1, .y = 1 });
+
+            // Keep the point under the cursor stable across zoom.
+            if (zoom_scroll_fix) |z| {
+                const new_sx = z.content_x * z.ratio - z.local_x;
+                const new_sy = z.content_y * z.ratio - z.local_y;
+                c.igSetScrollX_Float(@max(0, new_sx));
+                c.igSetScrollY_Float(@max(0, new_sy));
+            }
+
             // Image interaction: map mouse → image pixels and commit ops.
             var img_min: c.ImVec2 = undefined;
             var img_max: c.ImVec2 = undefined;
-            c.igGetItemRectMin(&img_min);
-            c.igGetItemRectMax(&img_max);
-            const hovered = c.igIsItemHovered(0);
-            const mouse = io.*.MousePos;
-            const lmb_down = c.igIsMouseDown_Nil(c.ImGuiMouseButton_Left);
-            const lmb_clicked = c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Left, false);
+            // Re-query image rect (item before Dummy was the image — use stored screen origin).
+            img_min = screen_origin;
+            img_max = .{ .x = screen_origin.x + disp_w, .y = screen_origin.y + disp_h };
+            // Hover uses screen rect (image may not be last item after Dummy).
+            const hovered = mouse.x >= img_min.x and mouse.x <= img_max.x and mouse.y >= img_min.y and mouse.y <= img_max.y and canvas_hovered;
+            const lmb_down = c.igIsMouseDown_Nil(c.ImGuiMouseButton_Left) and !c.igIsKeyDown_Nil(c.ImGuiKey_Space);
+            const lmb_clicked = c.igIsMouseClicked_Bool(c.ImGuiMouseButton_Left, false) and !c.igIsKeyDown_Nil(c.ImGuiKey_Space);
             const lmb_released = c.igIsMouseReleased_Nil(c.ImGuiMouseButton_Left);
 
             if (hovered and !text_editing) {

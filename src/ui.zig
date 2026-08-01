@@ -707,15 +707,9 @@ fn drawAbout(
     c.igText("ZigIt");
     c.igPopStyleColor(1);
     theme_mod.popTitle();
-    c.igSameLine(0.0, 10.0);
-    c.igSetCursorPosY(c.igGetCursorPosY() + 6.0);
+    // One version line only (not "ZigIt" again).
     c.igTextDisabled("v%s", @import("root").version);
     c.igTextDisabled("Wayland-first screenshot workflow for Linux.");
-    c.igSpacing();
-
-    theme_mod.sectionHeader("Version");
-    c.igText("ZigIt %s", @import("root").version);
-    c.igTextDisabled("Run zigit --version from a terminal for the same value.");
     c.igSpacing();
 
     theme_mod.sectionHeader("How to capture");
@@ -1050,13 +1044,14 @@ fn installBinding(
     form.hotkey_len = std.mem.len(@as([*:0]const u8, @ptrCast(&form.hotkey)));
     const hotkey = form.hotkey[0..form.hotkey_len];
     const home = (if (std.c.getenv("HOME")) |z| std.mem.span(z) else null) orelse return error.NoHome;
-    const exe = try std.process.executablePathAlloc(app_io.get(), allocator);
-    defer allocator.free(exe);
+    // Prefer /usr/bin/zigit so KDE global shortcuts always find AUR binary.
     const mode: config_mod.CaptureMode = switch (form.capture_mode_idx) {
         1 => .fullscreen,
         2 => .window,
         else => .region,
     };
+    const exe = try config_mod.launcherExe(allocator);
+    defer allocator.free(exe);
     const action = try config_mod.formatCaptureAction(allocator, exe, mode);
     defer allocator.free(action);
     const maybe_owner = if (detected == .kde)

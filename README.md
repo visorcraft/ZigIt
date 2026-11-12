@@ -23,7 +23,8 @@ Current release: **0.3.3**.
 
 - **One capture flow:** save, copy to the clipboard, and open the editor.
 - **Useful editing tools:** crop, arrows, rectangles, pen, text, blur,
-  numbered steps, undo, and redo.
+  numbered steps, undo, and redo - plus scroll-wheel zoom, middle-drag pan
+  and `0` to fit the image.
 - **Recent captures:** the daemon watches the capture directory and displays
   clickable thumbnails.
 - **Wayland integration:** native setup for Sway, Hyprland, River, Labwc, and
@@ -45,7 +46,8 @@ yay -S zigit
 ```
 
 That pulls the tagged release from GitHub and builds it with the system Zig
-toolchain. After install, the binary is on your `PATH` as `zigit`:
+toolchain (Zig 0.17 or newer). After install, the binary is on your `PATH`
+as `zigit`:
 
 ```bash
 zigit --version
@@ -64,13 +66,18 @@ makepkg -si
 ## Build from source
 
 ZigIt requires Zig 0.17.x, a C++ toolchain, GLFW, Wayland, EGL/GLESv2,
-xkbcommon, and `wl-copy`. KDE capture also requires its system capture service.
+xkbcommon, GTK 3 with the Ayatana appindicator (the system tray), and
+`wl-copy`. KDE capture also wants Spectacle.
 
 Arch Linux and CachyOS dependencies (when not using the AUR package):
 
 ```bash
-sudo pacman -S base-devel zig glfw wayland libxkbcommon mesa wl-clipboard
+sudo pacman -S base-devel zig glfw gtk3 libayatana-appindicator libglvnd \
+  wayland libxkbcommon mesa wl-clipboard
 ```
+
+The C headers are translated at build time, so the build itself needs no
+network access.
 
 Build and test:
 
@@ -115,18 +122,20 @@ Full walkthrough: [Using ZigIt](docs/usage.md).
 ```text
 zigit daemon
 zigit --version
-zigit capture [--overlay|--window]
+zigit capture [--region|--overlay|--window]
 zigit edit <png-path>
 zigit setup [--dry-run] [--uninstall] [--compositor=<name>]
+zigit decode <png-path>
 ```
 
 Examples:
 
 ```bash
-zigit capture                 # interactive region on KDE
-zigit capture --overlay       # full-screen capture
+zigit capture                 # interactive region selection
+zigit capture --overlay       # full-screen capture (--fullscreen is the same)
 zigit capture --window        # active-window capture
 zigit edit ~/screenshots/example.png
+zigit decode ~/screenshots/example.png   # PNG decode check, no UI
 zigit setup --compositor=kde --dry-run
 zigit setup --uninstall
 ```
@@ -134,8 +143,10 @@ zigit setup --uninstall
 ## Defaults and current limits
 
 - Captures default to `~/screenshots`; Settings can select another directory.
-- ZigIt targets Wayland. X11 is not supported.
-- KDE/portal sessions need the standard KDE capture service.
+- Capture requires Wayland. The editor and the daemon also start under X11,
+  but only Wayland is supported.
+- Capture backends: `grim` and `slurp` on wlroots compositors, Spectacle
+  when it is installed (best region UX on KDE), then the xdg-desktop portal.
 - The current wlroots path captures the first output while the interactive
   layer-shell selector and multi-output stitching remain unfinished.
 - GNOME hotkeys require a manual custom shortcut to `zigit capture`.

@@ -79,16 +79,17 @@ Arrow, Rect, Pen, Text, Blur, Step, and color controls.
 | `Ctrl+S` | Save the PNG |
 | `Ctrl+Z` | Undo |
 | `Ctrl+Y` | Redo |
-| `Esc` | Close the editor |
+| `Esc` | Close the editor (cancels the text modal when it is open) |
 
 ## Command reference
 
 ```bash
 zigit daemon                         # main window and capture history
 zigit capture                        # normal capture flow
-zigit capture --overlay              # full-screen capture
+zigit capture --overlay              # full-screen capture (--fullscreen too)
 zigit capture --window               # active-window capture
 zigit edit PATH                      # edit one PNG
+zigit decode PATH                    # PNG decode check, no UI
 zigit setup --dry-run                # preview compositor changes
 zigit setup --compositor=kde         # override auto-detection
 zigit setup --uninstall              # remove ZigIt hotkey

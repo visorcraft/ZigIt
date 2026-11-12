@@ -75,22 +75,33 @@ pub const Marquee = struct {
         self.watch.deinit();
     }
 
-    pub fn poll(self: *Marquee) !void {
+    /// Drain the watcher. Returns true when the capture list changed and the
+    /// strip needs to be repainted.
+    pub fn poll(self: *Marquee) !bool {
+        var changed = false;
         while (try self.watch.tryRead()) |ev| {
             switch (ev) {
                 // CREATE/MOVED_TO often fire before Spectacle finishes the write;
                 // refresh adds the path and ensureTexture retries until complete.
-                .created => try self.refresh(),
-                .deleted => try self.refresh(),
+                .created => {
+                    try self.refresh();
+                    changed = true;
+                },
+                .deleted => {
+                    try self.refresh();
+                    changed = true;
+                },
                 // MODIFY while writing: clear permanent-fail so a prior partial
                 // read does not stick once the file grows.
                 .modified => {
                     for (self.thumbnails.items) |*t| {
                         if (t.texture == 0) t.broken = false;
                     }
+                    changed = true;
                 },
             }
         }
+        return changed;
     }
 
     // Release one entry's GL texture and path. Textures are deleted here, and

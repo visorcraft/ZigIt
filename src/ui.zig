@@ -18,6 +18,7 @@ const config_mod = @import("config");
 const theme_mod = @import("theme");
 const instance_mod = @import("instance");
 const tray_mod = @import("tray");
+const redraw = @import("redraw");
 
 /// Editable form buffers for the Settings tab. Mirrors Config fields.
 const SettingsForm = struct {
@@ -163,6 +164,7 @@ pub const Ui = struct {
         // Close / minimize → hide to tray (do not quit). Quit only via tray menu.
         // On Wayland, glfwHideWindow destroys the xdg_toplevel so the taskbar
         // entry goes away; iconify alone would leave a minimized task.
+        redraw.install(w);
         _ = c.glfwSetWindowCloseCallback(w, onWindowClose);
         _ = c.glfwSetWindowIconifyCallback(w, onWindowIconify);
 
@@ -214,9 +216,17 @@ pub const Ui = struct {
         var kde_shortcuts_blocked = false;
         defer if (kde_shortcuts_blocked) compositor.setKdeShortcutsBlocked(allocator, false) catch {};
 
-        // After tray/socket Show, ignore close/Escape for a few frames so a
+        // After tray/socket Show, ignore close/Escape for a few loop turns so a
         // lingering key/compositor event cannot immediately re-hide the window.
+        // The loop no longer runs at frame rate, so this counts poll turns
+        // (~100 ms each) instead of frames.
         var show_grace_frames: i32 = 0;
+
+        // The first frame must be drawn: Wayland only maps the surface once a
+        // framebuffer is committed.
+        var first_frame = true;
+        // Extra frames planned for a delayed hover tooltip.
+        var tooltip: redraw.TooltipWake = .{};
 
         var running = true;
         while (running) {
@@ -238,6 +248,7 @@ pub const Ui = struct {
             // When hidden: tray-only mode. Wait on GLib/DBus (not GLFW) so the
             // StatusNotifier menu AboutToShow/activate handshakes stay responsive.
             // Do not run ImGui/GL/Swap while unmapped.
+            const toast_deadline = toast.nextDeadlineMs() orelse 0;
             if (c.glfwGetWindowAttrib(w, c.GLFW_VISIBLE) == 0) {
                 tray.wait(100);
                 // Non-blocking GLFW pump (no long sleep — that starved DBus).
@@ -252,13 +263,28 @@ pub const Ui = struct {
                 if (c.glfwGetWindowAttrib(w, c.GLFW_VISIBLE) == 0) continue;
                 // Just raised from tray — fall through and draw once so Wayland maps.
             } else {
-                c.glfwPollEvents();
+                // Wait for input instead of spinning. Presenting a frame on
+                // every vsync tick is what pinned the CPU on software GL.
+                waitForInput(toast_deadline, &tooltip);
                 // Keep DBusMenu warm while the main window is open too.
                 tray.poll();
             }
             if (show_grace_frames > 0) show_grace_frames -= 1;
+
+            // Only present when something actually changed: user input, a new
+            // or expired toast, or new captures. Otherwise the window would
+            // repaint 50 times a second for nothing.
+            const input_changed = redraw.takeDirty();
+            const now = nowMs();
+            if (redraw.takeMouseMoved()) tooltip.schedule(now);
+            const toast_expired = toast_deadline != 0 and now >= toast_deadline;
+            const tooltip_due = tooltip.due(now);
             const recording_before_frame = form.recording_hotkey;
-            try marquee.poll();
+            const captures_changed = try marquee.poll();
+            if (!first_frame and !input_changed and !toast_expired and !tooltip_due and !toast.pending and !captures_changed) continue;
+            first_frame = false;
+            if (tooltip_due) tooltip.consumed(now);
+
             c.cImGui_ImplOpenGL3_NewFrame();
             c.cImGui_ImplGlfw_NewFrame();
             c.igNewFrame();
@@ -364,7 +390,7 @@ pub const Ui = struct {
             c.glfwSwapBuffers(w);
             // Escape hides to tray (unless recording a hotkey or just raised).
             if (show_grace_frames <= 0 and !recording_before_frame and !form.recording_hotkey and
-                c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false))
+                redraw.tookKeyPress(c.GLFW_KEY_ESCAPE))
             {
                 hideToTray(w);
             }
@@ -386,7 +412,8 @@ fn processTrayAndInstance(
         showWindow(window);
         // Wayland only maps the surface after a framebuffer update; also
         // ignore hide/close for a few frames so raise sticks.
-        show_grace_frames.* = 15;
+        redraw.dirty = true;
+        show_grace_frames.* = 3;
     }
     if (tray.takeQuit()) return true;
     if (tray.takeCaptureRegion()) {
@@ -407,6 +434,32 @@ fn onWindowIconify(window: ?*c.GLFWwindow, iconified: c_int) callconv(.c) void {
     // X11/XWayland: iconify callback fires for minimize → tray-hide.
     // Pure Wayland (esp. KDE SSD): this never runs; KWin script handles it.
     if (iconified != 0) hideToTray(window);
+}
+
+// ── Idle redraw ──────────────────────────────────────────────────────────
+// The window repaints only when something changed; see the redraw module.
+
+/// Poll interval for the tray, the single-instance socket and the capture
+/// watcher while the window is visible.
+const poll_interval_s: f64 = 0.1;
+
+/// Wall-clock milliseconds since the epoch.
+fn nowMs() i64 {
+    return std.Io.Clock.real.now(app_io.get()).toMilliseconds();
+}
+
+/// Block until GLFW delivers input, a toast expires, a tooltip is due, or the
+/// poll interval is up. Never busy-loops.
+fn waitForInput(toast_deadline_ms: i64, tooltip: *const redraw.TooltipWake) void {
+    var timeout_s: f64 = poll_interval_s;
+    const now = nowMs();
+    if (toast_deadline_ms > now) {
+        timeout_s = @min(timeout_s, @as(f64, @floatFromInt(toast_deadline_ms - now)) / 1000.0);
+    }
+    if (tooltip.remainingMs(now)) |ms| {
+        timeout_s = @min(timeout_s, @as(f64, @floatFromInt(ms)) / 1000.0);
+    }
+    c.glfwWaitEventsTimeout(@max(timeout_s, 0.001));
 }
 
 /// Unmap the window completely (no taskbar entry). Prefer this over iconify.
@@ -849,7 +902,7 @@ fn printScreenActivated(form: *SettingsForm, window: ?*c.GLFWwindow) bool {
 
 /// While recording: Esc cancels; any non-modifier key press commits Super/Ctrl/Alt/Shift+key.
 fn pollHotkeyChord(form: *SettingsForm, window: ?*c.GLFWwindow) bool {
-    if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+    if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) or redraw.tookKeyPress(c.GLFW_KEY_ESCAPE)) {
         form.recording_hotkey = false;
         form.print_was_down = false;
         return false;

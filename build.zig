@@ -231,6 +231,12 @@ pub fn build(b: *std.Build) void {
     setup_mod.addImport("app_io", app_io_mod);
     setup_mod.addImport("app_icon", app_icon_mod);
 
+    const redraw_mod = b.addModule("redraw", .{
+        .root_source_file = b.path("src/redraw.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const editor_window_mod = b.addModule("editor_window", .{
         .root_source_file = b.path("src/editor_window.zig"),
         .target = target,
@@ -245,6 +251,7 @@ pub fn build(b: *std.Build) void {
     editor_window_mod.addImport("app_io", app_io_mod);
     editor_window_mod.addImport("app_icon", app_icon_mod);
     editor_window_mod.addImport("clipboard", clipboard_mod);
+    editor_window_mod.addImport("redraw", redraw_mod);
 
     const instance_mod = b.addModule("instance", .{
         .root_source_file = b.path("src/instance.zig"),
@@ -288,6 +295,7 @@ pub fn build(b: *std.Build) void {
     ui_mod.addImport("app_icon", app_icon_mod);
     ui_mod.addImport("instance", instance_mod);
     ui_mod.addImport("tray", tray_mod);
+    ui_mod.addImport("redraw", redraw_mod);
 
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -377,6 +385,7 @@ pub fn build(b: *std.Build) void {
             t_mod.addImport("app_icon", app_icon_mod);
             t_mod.addImport("instance", instance_mod);
             t_mod.addImport("tray", tray_mod);
+            t_mod.addImport("redraw", redraw_mod);
             t_mod.addIncludePath(b.path("vendor/imgui"));
             t_mod.addIncludePath(b.path("vendor"));
             t_mod.linkSystemLibrary("wayland-client", .{});

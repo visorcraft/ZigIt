@@ -31,6 +31,21 @@
 - [ ] Draw an arrow, save (Ctrl+S) → file overwritten, marquee refreshes
 - [ ] Undo (Ctrl+Z) → arrow removed
 - [ ] Close editor (Esc) → file persisted, no errors
+- [ ] Text tool → click the image, type, press Enter → text placed on the capture
+- [ ] Text tool → click the image, press Esc → text cancelled, editor stays open
+
+## Idle CPU
+
+Windows must not present frames while nothing happens.
+
+- [ ] Open the editor, leave it untouched → `top` shows ~0% CPU (no `llvmpipe-*`
+      threads burning cycles), the main thread sits blocked in `poll`
+- [ ] Move the mouse over the canvas → the crosshair follows, one repaint
+- [ ] Drag an arrow → the rubber band follows the cursor
+- [ ] Save (Ctrl+S) → "Saved" appears, stays readable for ~2s, then disappears
+- [ ] Open the main window (`zigit daemon`) and leave it idle → ~0% CPU
+- [ ] Escape in the main window → it hides to the tray and stays at ~0% CPU
+- [ ] Run `zigit daemon` again → the running daemon raises its window
 
 ## Persistence
 

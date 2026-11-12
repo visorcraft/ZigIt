@@ -15,6 +15,7 @@ const editor = @import("editor");
 const theme_mod = @import("theme");
 const config_mod = @import("config");
 const clipboard = @import("clipboard");
+const redraw = @import("redraw");
 
 const Tool = enum { crop, arrow, rect, pen, text, blur, step };
 
@@ -45,6 +46,43 @@ const rail_expanded_w: f32 = 208.0;
 // Default GLFW client size (matches a comfortable editor layout screenshot).
 const default_win_w: c_int = 1093;
 const default_win_h: c_int = 822;
+
+// How long the "Saved" / "Copied" status stays on screen.
+const status_duration_ms: i64 = 2500;
+// Redraw period while the text modal is open, so the caret keeps blinking.
+const caret_frame_s: f64 = 0.25;
+
+/// Wall-clock milliseconds since the epoch.
+fn nowMs() i64 {
+    return std.Io.Clock.real.now(app_io.get()).toMilliseconds();
+}
+
+/// Block until the editor has something new to draw.
+///
+/// Idle editors must not present frames: on a software rasterizer every frame
+/// costs real CPU, and swapping buffers re-arms the compositor frame callback
+/// so the wait would return again right away. Wait for GLFW input, for the
+/// status message to expire, for a pending tooltip, or for the text caret to
+/// blink - whichever comes first.
+fn waitForNextFrame(status_until_ms: i64, tooltip: *const redraw.TooltipWake, text_editing: bool) void {
+    const now = nowMs();
+    var timeout: ?f64 = null;
+    if (status_until_ms > now) {
+        timeout = @as(f64, @floatFromInt(status_until_ms - now)) / 1000.0;
+    }
+    if (tooltip.remainingMs(now)) |ms| {
+        const secs = @as(f64, @floatFromInt(ms)) / 1000.0;
+        timeout = @min(timeout orelse secs, secs);
+    }
+    if (text_editing) {
+        timeout = @min(timeout orelse caret_frame_s, caret_frame_s);
+    }
+    if (timeout) |t| {
+        c.glfwWaitEventsTimeout(@max(t, 0.001));
+    } else {
+        c.glfwWaitEvents();
+    }
+}
 
 fn u32col(r: f32, g: f32, b: f32, a: f32) c_uint {
     return c.igColorConvertFloat4ToU32(.{ .x = r, .y = g, .z = b, .w = a });
@@ -378,6 +416,8 @@ pub const EditorWindow = struct {
         defer c.igDestroyContext(ctx);
         theme_mod.loadFonts();
         theme_mod.apply(theme);
+        // Before the ImGui backend: it chains to the callbacks installed here.
+        redraw.install(win);
         _ = c.cImGui_ImplGlfw_InitForOpenGL(win, true);
         defer c.cImGui_ImplGlfw_Shutdown();
         _ = c.cImGui_ImplOpenGL3_Init("#version 300 es");
@@ -393,7 +433,8 @@ pub const EditorWindow = struct {
         var current_tool: Tool = .arrow;
         var color = default_color;
         var status: enum { idle, saved, save_failed, copied, copy_failed } = .idle;
-        var status_ticks: u32 = 0;
+        // Absolute deadline; the status vanishes on its own without frames.
+        var status_until_ms: i64 = 0;
 
         var drag_active = false;
         var drag_start: editor.Point = .{ .x = 0, .y = 0 };
@@ -413,11 +454,40 @@ pub const EditorWindow = struct {
         // 1.0 = fit image in canvas; wheel multiplies this. Middle-drag pans when zoomed.
         var view_zoom: f32 = 1.0;
 
+        // Status visibility of the last drawn frame. A change means the
+        // message appeared or expired and the canvas needs a new frame.
+        var drawn_status_visible = false;
+        // Extra frames planned for a delayed hover tooltip.
+        var tooltip: redraw.TooltipWake = .{};
+        // The first frame must be drawn: Wayland maps the surface on the first
+        // framebuffer commit.
+        var first_frame = true;
+
         while (c.glfwWindowShouldClose(win) == 0) {
-            c.glfwPollEvents();
+            if (!first_frame) {
+                // Block until GLFW has input, the status expires or the caret
+                // blinks. Swapping buffers while idle is what pinned the CPU.
+                waitForNextFrame(status_until_ms, &tooltip, text_editing);
+            }
+            const is_first = first_frame;
+            first_frame = false;
+
+            // Repaint only when something changed. The caret blinks, so keep
+            // painting while the text modal is open.
+            const input_changed = redraw.takeDirty() or is_first;
+            const now = nowMs();
+            if (redraw.takeMouseMoved()) tooltip.schedule(now);
+            const status_visible = status_until_ms > now;
+            const tooltip_due = tooltip.due(now);
+            if (!input_changed and !text_editing and !tooltip_due and status_visible == drawn_status_visible) continue;
+            if (tooltip_due) tooltip.consumed(now);
+
             c.cImGui_ImplOpenGL3_NewFrame();
             c.cImGui_ImplGlfw_NewFrame();
             c.igNewFrame();
+
+            // Escape closes the window, unless the text modal owns it.
+            const text_was_editing = text_editing;
 
             const io = c.igGetIO();
             c.igSetNextWindowPos(.{ .x = 0, .y = 0 }, c.ImGuiCond_Always, .{ .x = 0, .y = 0 });
@@ -434,15 +504,15 @@ pub const EditorWindow = struct {
                 if (c.igBeginMenu("File", true)) {
                     if (c.igMenuItem_Bool("Save", "Ctrl+S", false, true)) {
                         status = if (doc.save(allocator, path)) |_| .saved else |_| .save_failed;
-                        status_ticks = 120;
+                        status_until_ms = nowMs() + status_duration_ms;
                     }
                     if (c.igMenuItem_Bool("Copy path", null, false, true)) {
                         status = if (clipboard.copyText(allocator, path)) |_| .copied else |_| .copy_failed;
-                        status_ticks = 120;
+                        status_until_ms = nowMs() + status_duration_ms;
                     }
                     if (c.igMenuItem_Bool("Copy image", "Ctrl+C", false, true)) {
                         status = if (copyAnnotatedImage(allocator, &doc)) |_| .copied else |_| .copy_failed;
-                        status_ticks = 120;
+                        status_until_ms = nowMs() + status_duration_ms;
                     }
                     if (c.igMenuItem_Bool("Close", "Esc", false, !text_editing)) {
                         c.glfwSetWindowShouldClose(win, c.GLFW_TRUE);
@@ -607,7 +677,7 @@ pub const EditorWindow = struct {
                 theme_mod.pushGhost();
                 if (c.igButton("Copy image", .{ .x = btn_w, .y = 34 })) {
                     status = if (copyAnnotatedImage(allocator, &doc)) |_| .copied else |_| .copy_failed;
-                    status_ticks = 120;
+                    status_until_ms = nowMs() + status_duration_ms;
                 }
                 theme_mod.popGhost();
                 if (c.igIsItemHovered(0)) c.igSetTooltip("Copy PNG to clipboard (Ctrl+C)");
@@ -616,7 +686,7 @@ pub const EditorWindow = struct {
                 theme_mod.pushAccent();
                 if (c.igButton("Save", .{ .x = btn_w, .y = 40 })) {
                     status = if (doc.save(allocator, path)) |_| .saved else |_| .save_failed;
-                    status_ticks = 120;
+                    status_until_ms = nowMs() + status_duration_ms;
                 }
                 theme_mod.popAccent();
                 if (c.igIsItemHovered(0)) c.igSetTooltip("Save (Ctrl+S)");
@@ -651,7 +721,7 @@ pub const EditorWindow = struct {
                 theme_mod.pushGhost();
                 if (c.igButton("C##copy", .{ .x = btn_w, .y = 34 })) {
                     status = if (copyAnnotatedImage(allocator, &doc)) |_| .copied else |_| .copy_failed;
-                    status_ticks = 120;
+                    status_until_ms = nowMs() + status_duration_ms;
                 }
                 theme_mod.popGhost();
                 if (c.igIsItemHovered(0)) c.igSetTooltip("Copy image (Ctrl+C)");
@@ -659,7 +729,7 @@ pub const EditorWindow = struct {
                 theme_mod.pushAccent();
                 if (c.igButton("S##save", .{ .x = btn_w, .y = 40 })) {
                     status = if (doc.save(allocator, path)) |_| .saved else |_| .save_failed;
-                    status_ticks = 120;
+                    status_until_ms = nowMs() + status_duration_ms;
                 }
                 theme_mod.popAccent();
                 if (c.igIsItemHovered(0)) c.igSetTooltip("Save (Ctrl+S)");
@@ -712,8 +782,7 @@ pub const EditorWindow = struct {
             c.igSetCursorPosY(c.igGetCursorPosY() + 2.0);
             drawChip(toolNameZ(current_tool), .{ .x = 0.20, .y = 0.12, .z = 0.12, .w = 1.0 }, .{ .x = 0.95, .y = 0.45, .z = 0.40, .w = 1.0 });
 
-            if (status_ticks > 0) {
-                status_ticks -= 1;
+            if (status_until_ms > nowMs()) {
                 c.igSameLine(0.0, 12.0);
                 c.igSetCursorPosY(c.igGetCursorPosY() + 2.0);
                 switch (status) {
@@ -1126,7 +1195,9 @@ pub const EditorWindow = struct {
                 theme_mod.popAccent();
                 c.igSameLine(0.0, 8.0);
                 theme_mod.pushGhost();
-                if (c.igButton("Cancel", .{ .x = 120, .y = 34 }) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
+                // The modal owns Escape while it is open: it cancels the text
+                // instead of closing the editor.
+                if (c.igButton("Cancel", .{ .x = 120, .y = 34 }) or redraw.tookKeyPress(c.GLFW_KEY_ESCAPE)) {
                     text_editing = false;
                     c.igCloseCurrentPopup();
                 }
@@ -1140,11 +1211,11 @@ pub const EditorWindow = struct {
                 if (ctrl) {
                     if (c.igIsKeyPressed_Bool(c.ImGuiKey_S, false)) {
                         status = if (doc.save(allocator, path)) |_| .saved else |_| .save_failed;
-                        status_ticks = 120;
+                        status_until_ms = nowMs() + status_duration_ms;
                     }
                     if (c.igIsKeyPressed_Bool(c.ImGuiKey_C, false)) {
                         status = if (copyAnnotatedImage(allocator, &doc)) |_| .copied else |_| .copy_failed;
-                        status_ticks = 120;
+                        status_until_ms = nowMs() + status_duration_ms;
                     }
                     if (c.igIsKeyPressed_Bool(c.ImGuiKey_Z, false)) {
                         doc.undo();
@@ -1183,7 +1254,8 @@ pub const EditorWindow = struct {
             c.glClear(c.GL_COLOR_BUFFER_BIT);
             c.cImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
             c.glfwSwapBuffers(win);
-            if (!text_editing and c.glfwGetKey(win, c.GLFW_KEY_ESCAPE) == c.GLFW_PRESS) break;
+            drawn_status_visible = status_until_ms > nowMs();
+            if (!text_was_editing and redraw.tookKeyPress(c.GLFW_KEY_ESCAPE)) break;
         }
     }
 };

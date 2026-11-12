@@ -15,6 +15,9 @@ const max_toasts: usize = 8;
 pub const Toast = struct {
     allocator: std.mem.Allocator,
     items: std.array_list.Managed(Item),
+    /// Set when a toast was queued since the last draw. The caller repaints
+    /// only when something changed, so this tells it a toast needs showing.
+    pending: bool = false,
 
     pub const Item = struct {
         level: Level,
@@ -37,6 +40,7 @@ pub const Toast = struct {
         errdefer self.freeMsg(copy);
         const deadline = std.Io.Clock.real.now(app_io.get()).toMilliseconds() + 3500;
         try self.items.append(.{ .level = level, .msg = copy, .deadline_ms = deadline });
+        self.pending = true;
         // Cap the list: drop the oldest toasts when it grows past max_toasts.
         while (self.items.items.len > max_toasts) {
             self.freeMsg(self.items.items[0].msg);
@@ -45,6 +49,7 @@ pub const Toast = struct {
     }
 
     pub fn draw(self: *Toast) void {
+        self.pending = false;
         const now = std.Io.Clock.real.now(app_io.get()).toMilliseconds();
         var i: usize = 0;
         while (i < self.items.items.len) {
@@ -109,6 +114,15 @@ pub const Toast = struct {
             c.igPopStyleVar(3);
             c.igPopStyleColor(2);
         }
+    }
+
+    /// Deadline of the toast that expires first, or null when none are queued.
+    pub fn nextDeadlineMs(self: *const Toast) ?i64 {
+        var best: ?i64 = null;
+        for (self.items.items) |it| {
+            if (best == null or it.deadline_ms < best.?) best = it.deadline_ms;
+        }
+        return best;
     }
 
     fn freeMsg(self: *Toast, msg: [:0]u8) void {

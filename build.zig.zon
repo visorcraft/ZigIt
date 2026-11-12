@@ -1,8 +1,8 @@
 .{
     .name = .zigit,
-    .version = "0.3.2",
+    .version = "0.3.3",
     .fingerprint = 0x9da10f946b0317ce,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",

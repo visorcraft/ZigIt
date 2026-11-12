@@ -258,9 +258,11 @@ pub const Ui = struct {
                     running = false;
                     break;
                 }
-                if (show_grace_frames > 0) show_grace_frames -= 1;
                 // Still hidden: stay tray-only (no framebuffer commit).
-                if (c.glfwGetWindowAttrib(w, c.GLFW_VISIBLE) == 0) continue;
+                if (c.glfwGetWindowAttrib(w, c.GLFW_VISIBLE) == 0) {
+                    if (show_grace_frames > 0) show_grace_frames -= 1;
+                    continue;
+                }
                 // Just raised from tray — fall through and draw once so Wayland maps.
             } else {
                 // Wait for input instead of spinning. Presenting a frame on
@@ -389,8 +391,11 @@ pub const Ui = struct {
             c.cImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
             c.glfwSwapBuffers(w);
             // Escape hides to tray (unless recording a hotkey or just raised).
+            // Take the press even when a guard blocks the hide: a press that
+            // survives this frame would hide the window much later.
+            const esc_pressed = redraw.tookKeyPress(c.GLFW_KEY_ESCAPE);
             if (show_grace_frames <= 0 and !recording_before_frame and !form.recording_hotkey and
-                redraw.tookKeyPress(c.GLFW_KEY_ESCAPE))
+                esc_pressed)
             {
                 hideToTray(w);
             }
@@ -902,7 +907,9 @@ fn printScreenActivated(form: *SettingsForm, window: ?*c.GLFWwindow) bool {
 
 /// While recording: Esc cancels; any non-modifier key press commits Super/Ctrl/Alt/Shift+key.
 fn pollHotkeyChord(form: *SettingsForm, window: ?*c.GLFWwindow) bool {
-    if (c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false) or redraw.tookKeyPress(c.GLFW_KEY_ESCAPE)) {
+    // The recorded press comes first: it has to be consumed even when ImGui
+    // reports the edge too, or it would hide the window after recording ends.
+    if (redraw.tookKeyPress(c.GLFW_KEY_ESCAPE) or c.igIsKeyPressed_Bool(c.ImGuiKey_Escape, false)) {
         form.recording_hotkey = false;
         form.print_was_down = false;
         return false;

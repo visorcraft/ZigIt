@@ -1255,7 +1255,10 @@ pub const EditorWindow = struct {
             c.cImGui_ImplOpenGL3_RenderDrawData(c.igGetDrawData());
             c.glfwSwapBuffers(win);
             drawn_status_visible = status_until_ms > nowMs();
-            if (!text_was_editing and redraw.tookKeyPress(c.GLFW_KEY_ESCAPE)) break;
+            // Take the press even when the text modal owns it: a press that
+            // survives this frame would close the window much later.
+            const esc_pressed = redraw.tookKeyPress(c.GLFW_KEY_ESCAPE);
+            if (!text_was_editing and esc_pressed) break;
         }
     }
 };

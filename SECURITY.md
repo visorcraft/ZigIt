@@ -121,7 +121,7 @@ execution. OS components and tools above have their own security properties.
 
 Maintainers should:
 
-- keep the Zig toolchain current enough for supported builds (Zig 0.16+);
+- keep the Zig toolchain current enough for supported builds (Zig 0.17+);
 - review vendored Dear ImGui / cimgui / protocol sources when updating
   `vendor/`;
 - run `zig build test` before tagging a release;

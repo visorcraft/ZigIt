@@ -159,9 +159,9 @@ pub const Pipeline = struct {
 // include path and test artifacts do not link libwl_proto, and both of those
 // are build.zig concerns this module cannot rely on. wl_shm / wl_buffer /
 // wl_output interfaces come from libwayland-client itself.
-const wl = @cImport({
-    @cInclude("wayland-client.h");
-});
+// Wayland client bindings, translated at build time (Zig 0.17 has no
+// @cImport). See src/ctypes/wayland.h.
+const wl = @import("c_wayland");
 
 // The interface/message tables reference each other (manager's types point at
 // the frame interface, frame's messages point back into the shared types

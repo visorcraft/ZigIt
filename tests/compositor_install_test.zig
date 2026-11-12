@@ -126,11 +126,11 @@ test "install reads pre-existing config larger than 64 KiB" {
 
     const dir = home ++ "/.config/labwc";
     try std.Io.Dir.cwd().createDirPath(app_io.get(), dir);
-    const padding = "x" ** (128 * 1024);
+    var padding: [128 * 1024]u8 = @splat('x');
     {
         const f = try std.Io.Dir.createFileAbsolute(app_io.get(), dir ++ "/rc.xml", .{});
         defer f.close(app_io.get());
-        try f.writeStreamingAll(app_io.get(), padding);
+        try f.writeStreamingAll(app_io.get(), &padding);
     }
 
     const b = try cmp.install(testing.allocator, .labwc, home, "Print", "zigit capture --overlay");
@@ -139,6 +139,6 @@ test "install reads pre-existing config larger than 64 KiB" {
 
     const content = try std.Io.Dir.cwd().readFileAlloc(app_io.get(), b.snippetPath, testing.allocator, .limited(1 << 22));
     defer testing.allocator.free(content);
-    try testing.expect(std.mem.startsWith(u8, content, padding));
+    try testing.expect(std.mem.startsWith(u8, content, &padding));
     try testing.expect(std.mem.indexOf(u8, content, "<!-- BEGIN ZIGIT -->") != null);
 }

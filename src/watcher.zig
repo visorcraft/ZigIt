@@ -1,5 +1,7 @@
 const std = @import("std");
-const c = @cImport(@cInclude("sys/inotify.h"));
+// inotify bindings, translated at build time (Zig 0.17 has no @cImport).
+// See src/ctypes/inotify.h.
+const c = @import("c_inotify");
 
 pub const Event = enum { created, deleted, modified };
 
@@ -11,7 +13,7 @@ pub const Watcher = struct {
         const fd = std.c.inotify_init1(c.IN_NONBLOCK | c.IN_CLOEXEC);
         if (fd < 0) return error.InotifyInitFailed;
         errdefer _ = std.c.close(fd);
-        const dir_z = try std.heap.page_allocator.dupeZ(u8, dir);
+        const dir_z = try std.heap.page_allocator.dupeSentinel(u8, dir, 0);
         defer std.heap.page_allocator.free(dir_z);
         if (std.c.inotify_add_watch(fd, dir_z.ptr, c.IN_CREATE | c.IN_DELETE | c.IN_MODIFY | c.IN_MOVED_FROM | c.IN_MOVED_TO) < 0)
             return error.InotifyAddWatchFailed;

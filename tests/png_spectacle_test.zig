@@ -14,7 +14,7 @@ fn appendChunk(list: *std.array_list.Managed(u8), tag: *const [4]u8, payload: []
     const start = list.items.len;
     try list.appendSlice(tag);
     try list.appendSlice(payload);
-    const crc = std.hash.crc.Crc32.hash(list.items[start..]);
+    const crc = std.hash.Crc32.hash(list.items[start..]);
     var crc_buf: [4]u8 = undefined;
     writeBe32(&crc_buf, crc);
     try list.appendSlice(&crc_buf);
@@ -62,7 +62,7 @@ fn splitIdat(allocator: std.mem.Allocator, single: []const u8, piece: usize) ![]
 test "looksComplete requires IEND" {
     const w: u32 = 2;
     const h: u32 = 2;
-    var pixels: [16]u8 = .{255} ** 16;
+    var pixels: [16]u8 = @splat(255);
     const full = try png.encode(testing.allocator, &pixels, w, h);
     defer testing.allocator.free(full);
     try testing.expect(png.looksComplete(full));

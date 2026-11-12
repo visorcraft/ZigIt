@@ -5,7 +5,7 @@ and annotation in one Wayland-native application.
 
 ## Install and start
 
-Build ZigIt with Zig 0.16.0:
+Build ZigIt with Zig 0.17.x:
 
 ```bash
 zig build

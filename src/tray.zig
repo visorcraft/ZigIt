@@ -1,8 +1,7 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("tray_c.h");
-});
+// Tray bindings, translated at build time (Zig 0.17 has no @cImport).
+const c = @import("c_tray");
 
 pub const Tray = struct {
     handle: ?*c.ZigitTray = null,

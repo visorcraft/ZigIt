@@ -1,7 +1,7 @@
 const std = @import("std");
-const wayland = @cImport({
-    @cInclude("wayland-client.h");
-});
+// Wayland client bindings, translated at build time (Zig 0.17 has no
+// @cImport). See src/ctypes/wayland.h.
+const wayland = @import("c_wayland");
 
 pub const Output = struct {
     name: []u8,

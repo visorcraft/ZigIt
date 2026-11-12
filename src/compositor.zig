@@ -503,10 +503,9 @@ fn pushKdeLiveShortcuts(allocator: std.mem.Allocator, hotkey: []const u8) !void 
     };
     for (app_ids) |aid| {
         runCommand(allocator, &env, &.{
-            "gdbus", "call", "--session",
-            "--dest", "org.kde.kglobalaccel",
-            "--object-path", "/kglobalaccel",
-            "--method", "org.kde.KGlobalAccel.unRegister",
+            "gdbus",         "call",                 "--session",
+            "--dest",        "org.kde.kglobalaccel", "--object-path",
+            "/kglobalaccel", "--method",             "org.kde.KGlobalAccel.unRegister",
             aid,
         }) catch {};
     }
@@ -515,20 +514,16 @@ fn pushKdeLiveShortcuts(allocator: std.mem.Allocator, hotkey: []const u8) !void 
         const keys = try std.fmt.allocPrint(allocator, "[{s}]", .{qt_key_print});
         defer allocator.free(keys);
         runCommand(allocator, &env, &.{
-            "gdbus", "call", "--session",
-            "--dest", "org.kde.kglobalaccel",
-            "--object-path", "/kglobalaccel",
-            "--method", "org.kde.KGlobalAccel.doRegister",
+            "gdbus",                                                                                 "call",                 "--session",
+            "--dest",                                                                                "org.kde.kglobalaccel", "--object-path",
+            "/kglobalaccel",                                                                         "--method",             "org.kde.KGlobalAccel.doRegister",
             "['com.visorcraft.zigit.capture.desktop', '_launch', 'ZigIt Capture', 'ZigIt Capture']",
         }) catch {};
         runCommand(allocator, &env, &.{
-            "gdbus", "call", "--session",
-            "--dest", "org.kde.kglobalaccel",
-            "--object-path", "/kglobalaccel",
-            "--method", "org.kde.KGlobalAccel.setShortcut",
-            "['com.visorcraft.zigit.capture.desktop', '_launch', 'ZigIt Capture', 'ZigIt Capture']",
-            keys,
-            "4",
+            "gdbus",                                                                                 "call",                 "--session",
+            "--dest",                                                                                "org.kde.kglobalaccel", "--object-path",
+            "/kglobalaccel",                                                                         "--method",             "org.kde.KGlobalAccel.setShortcut",
+            "['com.visorcraft.zigit.capture.desktop', '_launch', 'ZigIt Capture', 'ZigIt Capture']", keys,                   "4",
         }) catch {};
     }
 }
@@ -816,21 +811,19 @@ fn installKdeMinimizeToTrayHookInner(allocator: std.mem.Allocator) !void {
 
     // Refresh script each start so updates apply without a Plasma restart.
     runCommand(allocator, &env, &.{
-        "gdbus",         "call",
-        "--session",     "--dest",
-        "org.kde.KWin",  "--object-path",
-        "/Scripting",    "--method",
-        "org.kde.kwin.Scripting.unloadScript",
-        kde_min_to_tray_plugin,
+        "gdbus",                               "call",
+        "--session",                           "--dest",
+        "org.kde.KWin",                        "--object-path",
+        "/Scripting",                          "--method",
+        "org.kde.kwin.Scripting.unloadScript", kde_min_to_tray_plugin,
     }) catch {};
 
     const out = try runCommandCapture(allocator, &env, &.{
-        "gdbus",         "call",
-        "--session",     "--dest",
-        "org.kde.KWin",  "--object-path",
-        "/Scripting",    "--method",
-        "org.kde.kwin.Scripting.loadScript",
-        path,
+        "gdbus",                             "call",
+        "--session",                         "--dest",
+        "org.kde.KWin",                      "--object-path",
+        "/Scripting",                        "--method",
+        "org.kde.kwin.Scripting.loadScript", path,
         kde_min_to_tray_plugin,
     });
     defer allocator.free(out);
@@ -840,10 +833,10 @@ fn installKdeMinimizeToTrayHookInner(allocator: std.mem.Allocator) !void {
     var obj_buf: [64]u8 = undefined;
     const obj = try std.fmt.bufPrint(&obj_buf, "/Scripting/Script{d}", .{id});
     try runCommand(allocator, &env, &.{
-        "gdbus",        "call",
-        "--session",    "--dest",
-        "org.kde.KWin", "--object-path",
-        obj,            "--method",
+        "gdbus",                   "call",
+        "--session",               "--dest",
+        "org.kde.KWin",            "--object-path",
+        obj,                       "--method",
         "org.kde.kwin.Script.run",
     });
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("GLFW/glfw3.h");
-});
+// GLFW bindings, translated at build time (Zig 0.17 has no @cImport).
+// See src/ctypes/gui.h.
+const c = @import("c_gui");
 
 /// Set by the GLFW input callbacks below.
 ///
@@ -94,11 +94,7 @@ pub fn tookKeyPress(key: c_int) bool {
 
 /// Install the input callbacks. Must run before the ImGui GLFW backend init:
 /// ImGui chains to whatever callback was installed before it.
-///
-/// The window is taken as `anyopaque` because each @cImport of glfw3.h yields
-/// its own opaque GLFWwindow type.
-pub fn install(win: ?*anyopaque) void {
-    const w: ?*c.GLFWwindow = @ptrCast(win);
+pub fn install(w: ?*c.GLFWwindow) void {
     _ = c.glfwSetCursorPosCallback(w, onCursorPos);
     _ = c.glfwSetCursorEnterCallback(w, onCursorEnter);
     _ = c.glfwSetMouseButtonCallback(w, onMouseButton);

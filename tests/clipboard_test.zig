@@ -9,7 +9,7 @@ const clipboard = @import("clipboard");
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 fn overridePath(new_path: [*:0]const u8) ![:0]u8 {
-    const orig = try testing.allocator.dupeZ(u8, (if (std.c.getenv("PATH")) |z| std.mem.span(z) else null) orelse "");
+    const orig = try testing.allocator.dupeSentinel(u8, (if (std.c.getenv("PATH")) |z| std.mem.span(z) else null) orelse "", 0);
     errdefer testing.allocator.free(orig);
     try testing.expectEqual(@as(c_int, 0), setenv("PATH", new_path, 1));
     return orig;

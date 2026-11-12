@@ -1,8 +1,7 @@
 const std = @import("std");
-const wl = @cImport({
-    @cInclude("wayland-client.h");
-    @cInclude("wlr-foreign-toplevel-management-unstable-v1-client.h");
-});
+// Wayland and foreign-toplevel bindings, translated at build time (Zig 0.17
+// has no @cImport). See src/ctypes/toplevel.h.
+const wl = @import("c_toplevel");
 const capture = @import("capture");
 
 pub const Toplevel = struct {

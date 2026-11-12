@@ -1,7 +1,7 @@
 const std = @import("std");
 
 fn crc32(data: []const u8) u32 {
-    return std.hash.crc.Crc32.hash(data);
+    return std.hash.Crc32.hash(data);
 }
 
 fn adler32(data: []const u8) u32 {

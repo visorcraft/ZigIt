@@ -17,9 +17,9 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !void {
         if (std.mem.eql(u8, argv[i], "--uninstall")) uninstall = true;
         if (std.mem.startsWith(u8, argv[i], "--compositor=")) {
             const v = argv[i][std.mem.indexOf(u8, argv[i], "=").? + 1 ..];
-            inline for (@typeInfo(compositor.Compositor).@"enum".fields) |f| {
-                if (std.mem.eql(u8, v, f.name)) {
-                    explicit = @field(compositor.Compositor, f.name);
+            inline for (@typeInfo(compositor.Compositor).@"enum".field_names) |f| {
+                if (std.mem.eql(u8, v, f)) {
+                    explicit = @field(compositor.Compositor, f);
                 }
             }
         }

@@ -1,15 +1,9 @@
 const std = @import("std");
 const app_io = @import("app_io");
 const app_icon = @import("app_icon");
-const c = @cImport({
-    @cInclude("GLFW/glfw3.h");
-    @cInclude("GLES2/gl2.h");
-    // Without this define cimgui.h falls back to C++ template typedefs
-    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
-    @cDefine("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
-    @cInclude("cimgui.h");
-    @cInclude("cimgui_backends.h");
-});
+// GLFW, GLES2 and cimgui bindings, translated at build time (Zig 0.17 has
+// no @cImport). See src/ctypes/gui.h.
+const c = @import("c_gui");
 const marquee_mod = @import("marquee");
 const storage = @import("storage");
 const toast_mod = @import("toast");
@@ -524,10 +518,10 @@ fn drawCaptures(
     c.igSameLine(0.0, 14.0);
     c.igSetCursorPosY(c.igGetCursorPosY() + 8.0);
     var count_buf: [48]u8 = undefined;
-    const count_z = std.fmt.bufPrintZ(&count_buf, "{d} capture{s}", .{
+    const count_z = std.fmt.bufPrintSentinel(&count_buf, "{d} capture{s}", .{
         marquee.thumbnails.items.len,
         if (marquee.thumbnails.items.len == 1) "" else "s",
-    }) catch "captures";
+    }, 0) catch "captures";
     c.igPushStyleColor_Vec4(c.ImGuiCol_Button, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
     c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonHovered, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });
     c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonActive, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 });

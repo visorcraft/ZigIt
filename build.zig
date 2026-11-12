@@ -26,9 +26,64 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // cimgui + Dear ImGui (vendored C++ compiled as a static library; cimgui is the
-    // C-friendly shim that @cImport can ingest. imgui.h itself is C++ and Zig's
-    // @cImport cannot parse it.)
+    // C bindings. Zig 0.17 removed @cImport, so the headers are translated at
+    // build time and imported as modules ("c_gui", "c_wayland", ...).
+    //
+    // Zig 0.17 also deprecates std.Build.Step.TranslateC in favour of the
+    // standalone translate-c package. The built-in step is used here because
+    // it needs no network access at build time; switch to
+    // `zig fetch --save git+https://codeberg.org/ziglang/translate-c#zig-0.17.x`
+    // if the packaged build can depend on it.
+    //
+    // GLFW, GLES2 and cimgui share one unit: cimgui_backends.h declares the
+    // backend entry points with GLFWwindow*, and one unit keeps GLFWwindow,
+    // ImFont and the other ImGui types identical across modules.
+    const c_gui_step = b.addTranslateC(.{
+        .root_source_file = b.path("src/ctypes/gui.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_gui_step.addIncludePath(b.path("vendor/imgui"));
+    c_gui_step.addIncludePath(b.path("vendor/imgui/cimgui"));
+    // Without this define cimgui.h falls back to C++ template typedefs
+    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
+    c_gui_step.defineCMacro("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
+    const c_gui = c_gui_step.addModule("c_gui");
+
+    const c_wayland_step = b.addTranslateC(.{
+        .root_source_file = b.path("src/ctypes/wayland.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_wayland_step.linkSystemLibrary("wayland-client", .{});
+    const c_wayland = c_wayland_step.addModule("c_wayland");
+
+    const c_toplevel_step = b.addTranslateC(.{
+        .root_source_file = b.path("src/ctypes/toplevel.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_toplevel_step.addIncludePath(b.path("vendor"));
+    c_toplevel_step.linkSystemLibrary("wayland-client", .{});
+    const c_toplevel = c_toplevel_step.addModule("c_toplevel");
+
+    const c_inotify_step = b.addTranslateC(.{
+        .root_source_file = b.path("src/ctypes/inotify.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const c_inotify = c_inotify_step.addModule("c_inotify");
+
+    const c_tray_step = b.addTranslateC(.{
+        .root_source_file = b.path("src/tray_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const c_tray = c_tray_step.addModule("c_tray");
+
+    // cimgui + Dear ImGui (vendored C++ compiled as a static library; cimgui is
+    // the C-friendly shim the "c_gui" module is translated from. imgui.h itself
+    // is C++ and cannot be translated directly.)
     const imgui_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
@@ -106,6 +161,11 @@ pub fn build(b: *std.Build) void {
     }
     // app_io is index 0; wire it into modules that perform process I/O.
     const app_io_mod = mods[0];
+    // watcher (index 2) and wayland (index 5) need their C bindings.
+    const watcher_mod = mods[2];
+    watcher_mod.addImport("c_inotify", c_inotify);
+    const wayland_mod = mods[5];
+    wayland_mod.addImport("c_wayland", c_wayland);
 
     const app_icon_mod = b.addModule("app_icon", .{
         .root_source_file = b.path("src/app_icon.zig"),
@@ -119,8 +179,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    theme_mod.addIncludePath(b.path("vendor/imgui"));
-    theme_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
+    theme_mod.addImport("c_gui", c_gui);
     theme_mod.addImport("config", mods[1]);
     theme_mod.addImport("app_io", app_io_mod);
 
@@ -136,13 +195,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    png_mod.addIncludePath(b.path("vendor/imgui"));
 
     const capture_mod = b.addModule("capture", .{
         .root_source_file = b.path("src/capture.zig"),
         .target = target,
         .optimize = optimize,
     });
+    capture_mod.addImport("c_wayland", c_wayland);
     capture_mod.addImport("png", png_mod);
 
     const editor_mod = b.addModule("editor", .{
@@ -159,8 +218,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    marquee_mod.addIncludePath(b.path("vendor/imgui"));
-    marquee_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
+    marquee_mod.addImport("c_gui", c_gui);
     marquee_mod.addImport("watcher", mods[2]);
     marquee_mod.addImport("png", png_mod);
     marquee_mod.addImport("app_io", app_io_mod);
@@ -176,8 +234,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    toast_mod.addIncludePath(b.path("vendor/imgui"));
-    toast_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
+    toast_mod.addImport("c_gui", c_gui);
     toast_mod.addImport("app_io", app_io_mod);
 
     const spawn_mod = b.addModule("spawn", .{
@@ -192,6 +249,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    toplevel_mod.addImport("c_toplevel", c_toplevel);
     toplevel_mod.addIncludePath(b.path("vendor"));
     toplevel_mod.addImport("capture", capture_mod);
 
@@ -236,14 +294,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    redraw_mod.addImport("c_gui", c_gui);
 
     const editor_window_mod = b.addModule("editor_window", .{
         .root_source_file = b.path("src/editor_window.zig"),
         .target = target,
         .optimize = optimize,
     });
-    editor_window_mod.addIncludePath(b.path("vendor/imgui"));
-    editor_window_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
+    editor_window_mod.addImport("c_gui", c_gui);
     editor_window_mod.addImport("png", png_mod);
     editor_window_mod.addImport("editor", editor_mod);
     editor_window_mod.addImport("theme", theme_mod);
@@ -266,6 +324,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    tray_mod.addImport("c_tray", c_tray);
     tray_mod.addCSourceFile(.{
         .file = b.path("src/tray_c.c"),
         .flags = &.{},
@@ -283,8 +342,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    ui_mod.addIncludePath(b.path("vendor/imgui"));
-    ui_mod.addIncludePath(b.path("vendor/imgui/cimgui"));
+    ui_mod.addImport("c_gui", c_gui);
     ui_mod.addImport("marquee", marquee_mod);
     ui_mod.addImport("storage", storage_mod);
     ui_mod.addImport("toast", toast_mod);
@@ -386,7 +444,6 @@ pub fn build(b: *std.Build) void {
             t_mod.addImport("instance", instance_mod);
             t_mod.addImport("tray", tray_mod);
             t_mod.addImport("redraw", redraw_mod);
-            t_mod.addIncludePath(b.path("vendor/imgui"));
             t_mod.addIncludePath(b.path("vendor"));
             t_mod.linkSystemLibrary("wayland-client", .{});
             t_mod.linkSystemLibrary("glfw3", .{});

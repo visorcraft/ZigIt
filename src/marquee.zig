@@ -1,12 +1,8 @@
 const std = @import("std");
 const app_io = @import("app_io");
-const c = @cImport({
-    @cInclude("GLES2/gl2.h");
-    // Without this define cimgui.h falls back to C++ template typedefs
-    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
-    @cDefine("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
-    @cInclude("cimgui.h");
-});
+// GLES2 and cimgui bindings, translated at build time (Zig 0.17 has no
+// @cImport). See src/ctypes/gui.h.
+const c = @import("c_gui");
 const png = @import("png");
 const watcher = @import("watcher");
 
@@ -233,7 +229,7 @@ pub const Marquee = struct {
 
             // Unique child id per path.
             var id_buf: [32]u8 = undefined;
-            const id_z = std.fmt.bufPrintZ(&id_buf, "##card{d}", .{i}) catch "##card";
+            const id_z = std.fmt.bufPrintSentinel(&id_buf, "##card{d}", .{i}, 0) catch "##card";
             // Pull card fill from the active theme so light mode stays readable.
             const style = c.igGetStyle().*;
             // ImGuiCol_FrameBg == 7; index as usize for Zig 0.16 C array access.

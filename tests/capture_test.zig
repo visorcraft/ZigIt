@@ -59,7 +59,7 @@ test "cropRect extracts a sub-region" {
 }
 
 test "cropRect clamps to buffer bounds" {
-    const data = [_]u8{0x77} ** (4 * 4 * 4);
+    const data: [64]u8 = @splat(0x77);
     const b = capture.Buffer{
         .width = 4,
         .height = 4,
@@ -74,7 +74,7 @@ test "cropRect clamps to buffer bounds" {
 }
 
 test "cropToplevel crops to the toplevel bounds" {
-    const data = [_]u8{0x11} ** (8 * 8 * 4);
+    const data: [256]u8 = @splat(0x11);
     const b = capture.Buffer{
         .width = 8,
         .height = 8,

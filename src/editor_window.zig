@@ -1,15 +1,9 @@
 const std = @import("std");
 const app_io = @import("app_io");
 const app_icon = @import("app_icon");
-const c = @cImport({
-    @cInclude("GLFW/glfw3.h");
-    @cInclude("GLES2/gl2.h");
-    // Without this define cimgui.h falls back to C++ template typedefs
-    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
-    @cDefine("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
-    @cInclude("cimgui.h");
-    @cInclude("cimgui_backends.h");
-});
+// GLFW, GLES2 and cimgui bindings, translated at build time (Zig 0.17 has
+// no @cImport). See src/ctypes/gui.h.
+const c = @import("c_gui");
 const png = @import("png");
 const editor = @import("editor");
 const theme_mod = @import("theme");
@@ -126,7 +120,7 @@ fn drawColorPresets(color: *[4]f32, btn_w: f32) void {
     for (preset_colors, 0..) |pc, i| {
         if (i > 0) c.igSameLine(0.0, gap);
         var id_buf: [24]u8 = undefined;
-        const id = std.fmt.bufPrintZ(&id_buf, "##swatch{d}", .{i}) catch "##sw";
+        const id = std.fmt.bufPrintSentinel(&id_buf, "##swatch{d}", .{i}, 0) catch "##sw";
         c.igPushStyleColor_Vec4(c.ImGuiCol_Button, .{ .x = pc[0], .y = pc[1], .z = pc[2], .w = 1.0 });
         c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonHovered, .{ .x = pc[0], .y = pc[1], .z = pc[2], .w = 0.9 });
         c.igPushStyleColor_Vec4(c.ImGuiCol_ButtonActive, .{ .x = pc[0], .y = pc[1], .z = pc[2], .w = 0.8 });
@@ -371,7 +365,7 @@ pub const EditorWindow = struct {
         defer doc.deinit();
         @memcpy(doc.base.pixels, px);
 
-        const path_z = try allocator.dupeZ(u8, path);
+        const path_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(path_z.ptr[0 .. path_z.len + 1]);
 
         // Prefer user theme from config when available.
@@ -611,7 +605,7 @@ pub const EditorWindow = struct {
                     );
                     // Muted digit shortcut on the right edge.
                     var digit_buf: [4]u8 = undefined;
-                    const digit = std.fmt.bufPrintZ(&digit_buf, "{d}", .{ti_i + 1}) catch "?";
+                    const digit = std.fmt.bufPrintSentinel(&digit_buf, "{d}", .{ti_i + 1}, 0) catch "?";
                     var dsz: c.ImVec2 = undefined;
                     c.igCalcTextSize(&dsz, digit.ptr, null, false, -1.0);
                     c.ImDrawList_AddText_Vec2(
@@ -696,10 +690,10 @@ pub const EditorWindow = struct {
                     c.igSpacing();
                     c.igPushStyleColor_Vec4(c.ImGuiCol_Text, .{ .x = 0.45, .y = 0.45, .z = 0.50, .w = 1.0 });
                     var edit_buf: [48]u8 = undefined;
-                    const edit_z = std.fmt.bufPrintZ(&edit_buf, "{d} edit{s}", .{
+                    const edit_z = std.fmt.bufPrintSentinel(&edit_buf, "{d} edit{s}", .{
                         doc.ops.items.len,
                         if (doc.ops.items.len == 1) "" else "s",
-                    }) catch "edits";
+                    }, 0) catch "edits";
                     c.igText("%s", edit_z.ptr);
                     c.igPopStyleColor(1);
                 }
@@ -775,7 +769,7 @@ pub const EditorWindow = struct {
             c.igSameLine(0.0, 12.0);
             c.igSetCursorPosY(c.igGetCursorPosY() + 2.0);
             var dim_buf: [48]u8 = undefined;
-            const dim_z = std.fmt.bufPrintZ(&dim_buf, "{d}x{d}", .{ tex_w, tex_h }) catch "?";
+            const dim_z = std.fmt.bufPrintSentinel(&dim_buf, "{d}x{d}", .{ tex_w, tex_h }, 0) catch "?";
             drawChip(dim_z.ptr, .{ .x = 0.14, .y = 0.14, .z = 0.16, .w = 1.0 }, .{ .x = 0.85, .y = 0.85, .z = 0.88, .w = 1.0 });
 
             c.igSameLine(0.0, 8.0);
@@ -880,7 +874,7 @@ pub const EditorWindow = struct {
             // Zoom chip (click to fit).
             {
                 var zoom_buf: [32]u8 = undefined;
-                const zoom_z = std.fmt.bufPrintZ(&zoom_buf, "{d}%##zoom_chip", .{zoom_pct}) catch "100%##z";
+                const zoom_z = std.fmt.bufPrintSentinel(&zoom_buf, "{d}%##zoom_chip", .{zoom_pct}, 0) catch "100%##z";
                 const saved_x = c.igGetCursorPosX();
                 const saved_y = c.igGetCursorPosY();
                 var zsz: c.ImVec2 = undefined;
@@ -1309,7 +1303,7 @@ fn drawChip(label: [*:0]const u8, bg: c.ImVec4, fg: c.ImVec4) void {
 
 fn drawSelectionSizeLabel(dl: *c.ImDrawList, anchor: c.ImVec2, w: u32, h: u32) void {
     var buf: [48]u8 = undefined;
-    const z = std.fmt.bufPrintZ(&buf, "{d}x{d}", .{ w, h }) catch return;
+    const z = std.fmt.bufPrintSentinel(&buf, "{d}x{d}", .{ w, h }, 0) catch return;
     var sz: c.ImVec2 = undefined;
     c.igCalcTextSize(&sz, z.ptr, null, false, -1.0);
     const pad: f32 = 4.0;

@@ -138,12 +138,12 @@ pub fn portalScreenshot(allocator: std.mem.Allocator, out_path: []const u8, inte
 
     const call = std.process.run(allocator, io, .{
         .argv = &.{
-            "gdbus",        "call",
-            "--session",    "--dest",
-            "org.freedesktop.portal.Desktop",
-            "--object-path", "/org/freedesktop/portal/desktop",
-            "--method",     "org.freedesktop.portal.Screenshot.Screenshot",
-            "",             options,
+            "gdbus",                                        "call",
+            "--session",                                    "--dest",
+            "org.freedesktop.portal.Desktop",               "--object-path",
+            "/org/freedesktop/portal/desktop",              "--method",
+            "org.freedesktop.portal.Screenshot.Screenshot", "",
+            options,
         },
         .stdout_limit = .limited(1024),
         .stderr_limit = .limited(4096),

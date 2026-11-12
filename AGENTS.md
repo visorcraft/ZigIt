@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`src/` contains the Zig application. `main.zig` dispatches the `daemon`, `capture`, `edit`, and `setup` subcommands; supporting modules separate UI, Wayland integration, capture, storage, configuration, and editing concerns. `tests/` contains one `*_test.zig` file per feature area. `vendor/` holds checked-in Dear ImGui and Wayland protocol sources; change it only when intentionally updating vendored code. `docs/` contains user guidance and the manual UAT checklist. Build outputs belong in `zig-out/` and `.zig-cache/`.
+`src/` contains the Zig application. `main.zig` dispatches the `daemon`, `capture`, `edit`, and `setup` subcommands; supporting modules separate UI, Wayland integration, capture, storage, configuration, and editing concerns. `src/ctypes/` holds the C headers that the build translates into the `c_gui`, `c_wayland`, `c_toplevel`, `c_inotify` and `c_tray` modules. `tests/` contains one `*_test.zig` file per feature area. `vendor/` holds checked-in Dear ImGui and Wayland protocol sources; change it only when intentionally updating vendored code. `docs/` contains user guidance and the manual UAT checklist. Build outputs belong in `zig-out/` and `.zig-cache/`.
 
 ## Build, Test, and Development Commands
 
@@ -13,7 +13,7 @@
 - `zig fmt path/to/file.zig`: format a changed Zig file.
 - `./zig-out/bin/zigit daemon`: launch the main UI after building. Other entry points include `capture`, `edit PATH`, and `setup`.
 
-Use Zig 0.16.0 or newer compatible tooling. The native build links GLFW, Wayland, EGL, GLESv2, and xkbcommon development libraries.
+Use Zig 0.17.x. Zig 0.17 removed `@cImport`, so the C headers under `src/ctypes/` are translated at build time and imported as the `c_*` modules; add new bindings there instead of `@cImport`. The native build links GLFW, Wayland, EGL, GLESv2, and xkbcommon development libraries.
 
 ## Coding Style & Naming Conventions
 

@@ -1,11 +1,8 @@
 const std = @import("std");
 const app_io = @import("app_io");
-const c = @cImport({
-    // Without this define cimgui.h falls back to C++ template typedefs
-    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
-    @cDefine("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
-    @cInclude("cimgui.h");
-});
+// cimgui bindings, translated at build time (Zig 0.17 has no @cImport).
+// See src/ctypes/gui.h.
+const c = @import("c_gui");
 
 pub const Level = enum { info, warn, @"error" };
 
@@ -36,7 +33,7 @@ pub const Toast = struct {
     }
 
     pub fn show(self: *Toast, level: Level, msg: []const u8) !void {
-        const copy = try self.allocator.dupeZ(u8, msg);
+        const copy = try self.allocator.dupeSentinel(u8, msg, 0);
         errdefer self.freeMsg(copy);
         const deadline = std.Io.Clock.real.now(app_io.get()).toMilliseconds() + 3500;
         try self.items.append(.{ .level = level, .msg = copy, .deadline_ms = deadline });
@@ -87,7 +84,7 @@ pub const Toast = struct {
             };
 
             var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrintZ(&name_buf, "##toast{d}", .{idx}) catch "##toast";
+            const name = std.fmt.bufPrintSentinel(&name_buf, "##toast{d}", .{idx}, 0) catch "##toast";
 
             c.igSetNextWindowPos(.{ .x = io.*.DisplaySize.x - toast_w - pad, .y = y }, c.ImGuiCond_Always, .{ .x = 0, .y = 0 });
             c.igSetNextWindowSize(.{ .x = toast_w, .y = toast_h }, c.ImGuiCond_Always);
@@ -126,7 +123,7 @@ pub const Toast = struct {
     }
 
     fn freeMsg(self: *Toast, msg: [:0]u8) void {
-        // dupeZ allocates len + 1 bytes; free the full allocation.
+        // dupeSentinel allocates len + 1 bytes; free the full allocation.
         self.allocator.free(msg.ptr[0 .. msg.len + 1]);
     }
 };

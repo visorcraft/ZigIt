@@ -1,11 +1,8 @@
 const std = @import("std");
 const app_io = @import("app_io");
-const c = @cImport({
-    // Without this define cimgui.h falls back to C++ template typedefs
-    // (ImPool<T>, ImVector<T>, ...) that translate-c cannot parse.
-    @cDefine("CIMGUI_DEFINE_ENUMS_AND_STRUCTS", "1");
-    @cInclude("cimgui.h");
-});
+// cimgui bindings, translated at build time (Zig 0.17 has no @cImport).
+// See src/ctypes/gui.h.
+const c = @import("c_gui");
 const config = @import("config");
 
 /// Loaded once per ImGui context. Null when only the default (pixel) font is available.

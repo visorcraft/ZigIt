@@ -63,7 +63,7 @@ makepkg -si
 
 ## Build from source
 
-ZigIt requires Zig 0.16.0, a C++ toolchain, GLFW, Wayland, EGL/GLESv2,
+ZigIt requires Zig 0.17.x, a C++ toolchain, GLFW, Wayland, EGL/GLESv2,
 xkbcommon, and `wl-copy`. KDE capture also requires its system capture service.
 
 Arch Linux and CachyOS dependencies (when not using the AUR package):

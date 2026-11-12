@@ -28,6 +28,7 @@
 
 - [ ] Click a marquee thumbnail → editor window opens with the capture
 - [ ] Tool palette shows: Crop, Arrow, Rect, Pen, Text, Blur, Step, Color
+- [ ] Hover a tool button → its hint tooltip appears after a moment
 - [ ] Draw an arrow, save (Ctrl+S) → file overwritten, marquee refreshes
 - [ ] Undo (Ctrl+Z) → arrow removed
 - [ ] Close editor (Esc) → file persisted, no errors
